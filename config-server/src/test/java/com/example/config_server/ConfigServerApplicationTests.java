@@ -1,10 +1,10 @@
-package com.example.service_discovery;
+package com.example.config_server;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 
 @SpringBootTest
-class ServiceDiscoveryApplicationTests {
+class ConfigServerApplicationTests {
 
 	//@Test
 	void contextLoads() {

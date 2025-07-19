@@ -8,6 +8,7 @@
         <outputRelativeToContentRoot value="true" />
         <module name="user-backend" />
         <module name="api-gateway" />
+        <module name="config-server" />
         <module name="service-discovery" />
       </profile>
     </annotationProcessing>
@@ -15,6 +16,7 @@
   <component name="JavacSettings">
     <option name="ADDITIONAL_OPTIONS_OVERRIDE">
       <module name="api-gateway" options="-parameters" />
+      <module name="config-server" options="-parameters" />
       <module name="service-discovery" options="-parameters" />
       <module name="user-backend" options="-parameters" />
     </option>
