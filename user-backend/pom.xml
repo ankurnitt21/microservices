@@ -82,6 +82,8 @@
 			<artifactId>spring-cloud-commons</artifactId>
 			<scope>compile</scope>
 		</dependency>
+
+
 	</dependencies>
 
 	<build>
