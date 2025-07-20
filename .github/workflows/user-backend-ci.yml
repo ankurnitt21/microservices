@@ -5,7 +5,7 @@ name: CI for User Backend
 on:
   push:
     branches:
-      - master  # Jab bhi 'main' branch par push hoga
+      - master  
     paths:
       - 'user-backend/**' 
 
@@ -42,3 +42,26 @@ jobs:
           context: ./user-backend  
           push: true 
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/user-backend:latest 
+
+ 
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-and-push-image 
+    
+    steps:
+      - name: Deploy to Production Server
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22 # Default SSH port
+          script: |
+            cd ~/microservices
+            git pull
+
+            
+            docker pull ${{ secrets.DOCKERHUB_USERNAME }}/user-backend:latest
+            
+            
+            docker-compose up -d --no-deps user-backend
