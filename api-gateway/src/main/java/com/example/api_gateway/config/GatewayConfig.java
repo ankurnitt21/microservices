@@ -13,6 +13,8 @@ public class GatewayConfig {
         return builder.routes()
                 .route("user-service", r -> r.path("/api/users/**")
                         .uri("lb://user-backend"))
+                .route("product-service", r -> r.path("/api/products/**")
+                        .uri("lb://product-service"))
                 .build();
     }
 }

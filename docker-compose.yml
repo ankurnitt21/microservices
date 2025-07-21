@@ -76,6 +76,23 @@ services:
       - DB_URL=jdbc:postgresql://postgres-db:5432/postgres
       - eureka.client.service-url.defaultZone=http://service-discovery:8761/eureka/
 
+  product-service:
+    build: ./product-service
+    container_name: product-service
+    ports:
+      - "8081:8081"
+    networks:
+      - my-network
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+      service-discovery:
+        condition: service_healthy
+    environment:
+      - SPRING_CLOUD_CONFIG_URI=http://config-server:8888
+      - DB_URL=jdbc:postgresql://postgres-db:5432/postgres
+      - eureka.client.service-url.defaultZone=http://service-discovery:8761/eureka/
+
   # 5. API Gateway
   api-gateway:
     build: ./api-gateway
