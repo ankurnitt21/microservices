@@ -20,8 +20,8 @@ public class ProductService {
         return productRepository.findAll();
     }
 
-    public Optional<Product> findProductById(Long id) {
-        return productRepository.findById(id);
+    public Optional<Product> findProductBySku(String sku) {
+        return productRepository.findBySku(sku);
     }
 
     public Product saveProduct(Product product) {

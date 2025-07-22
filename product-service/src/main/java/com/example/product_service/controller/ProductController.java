@@ -27,9 +27,9 @@ public class ProductController {
         return productService.findAllProducts();
     }
 
-    @GetMapping("/{id}")
-    public ResponseEntity<Product> getProductById(@PathVariable Long id) {
-        return productService.findProductById(id)
+    @GetMapping("/{sku}")
+    public ResponseEntity<Product> getProductBySku(@PathVariable String sku) {
+        return productService.findProductBySku(sku)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
