@@ -24,6 +24,7 @@ public class ProductController {
     @GetMapping
     @ResponseStatus(HttpStatus.OK)
     public List<Product> getAllProducts() {
+        log.info("Fetching all product");
         return productService.findAllProducts();
     }
 
