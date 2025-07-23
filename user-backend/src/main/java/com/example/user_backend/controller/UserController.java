@@ -24,7 +24,7 @@ public class UserController {
 
     @GetMapping
     public List<User> getAllUsers() {
-        logger.info("Received request to get all users");
+        logger.info("Received request to get all users from database");
         List<User> users = userRepository.findAll();
         logger.debug("Fetched {} users from database", users.size());
         return users;
