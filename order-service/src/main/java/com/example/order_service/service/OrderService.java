@@ -2,6 +2,10 @@ package com.example.order_service.service;
 
 import com.example.order_service.model.Order;
 import com.example.order_service.repository.OrderRepository;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
+import io.github.resilience4j.retry.annotation.Retry;
+import io.github.resilience4j.timelimiter.annotation.TimeLimiter;
 import java.math.BigDecimal;
 import java.util.Map;
 import java.util.UUID;
@@ -21,6 +25,10 @@ public class OrderService {
     }
 
     @Transactional
+    @CircuitBreaker(name = "placeOrder", fallbackMethod = "handleOrderFailure")
+    @Retry(name = "placeOrder", fallbackMethod = "handleOrderFailure")
+    @RateLimiter(name = "placeOrder", fallbackMethod = "handleOrderFailure")
+    @TimeLimiter(name = "placeOrder")
     public Order placeOrder(Order incomingOrder) {
         String sku = incomingOrder.getSku();
         Integer quantity = incomingOrder.getQuantity();
@@ -41,5 +49,14 @@ public class OrderService {
         incomingOrder.setPriceAtOrder(price);
 
         return orderRepository.save(incomingOrder);
+    }
+
+    public Order handleOrderFailure(Order incomingOrder, Throwable t) {
+        System.out.println("============== FALLBACK EXECUTED ==============");
+        System.out.println("Could not place order for user " + incomingOrder.getUserId() + " and SKU " + incomingOrder.getSku());
+        System.out.println("Reason for failure: " + t.getMessage());
+        System.out.println("==============================================");
+
+        throw new RuntimeException("Sorry, we could not place your order at this time. Please try again later.");
     }
 }
