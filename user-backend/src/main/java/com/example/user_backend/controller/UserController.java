@@ -8,12 +8,14 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Optional;
 
 @CrossOrigin(origins = "http://localhost:3000")
 @RestController
 @RequestMapping("/api/users")
 public class UserController {
 
+    private static final Logger log = LoggerFactory.getLogger(UserController.class);
     private static final Logger logger = LoggerFactory.getLogger(UserController.class);
     private final UserRepository userRepository;
 
@@ -51,5 +53,37 @@ public class UserController {
         User savedUser = userRepository.save(user);
         logger.debug("User saved: {}", savedUser);
         return ResponseEntity.ok(savedUser);
+    }
+
+    @PutMapping("/{id}")
+    public ResponseEntity<User> updateUser(@PathVariable Long id, @RequestBody User userDetails) {
+        log.info("Request to update user with ID: {}", id);
+        Optional<User> optionalUser = userRepository.findById(id);
+
+        if (optionalUser.isEmpty()) {
+            log.warn("Cannot update. User with ID: {} not found.", id);
+            return ResponseEntity.notFound().build();
+        }
+
+        User existingUser = optionalUser.get();
+        existingUser.setName(userDetails.getName());
+        existingUser.setEmail(userDetails.getEmail());
+
+        User updatedUser = userRepository.save(existingUser);
+        log.info("Successfully updated user with ID: {}", updatedUser.getId());
+        return ResponseEntity.ok(updatedUser);
+    }
+
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> deleteUser(@PathVariable Long id) {
+        log.info("Request to delete user with ID: {}", id);
+        if (!userRepository.existsById(id)) {
+            log.warn("Cannot delete. User with ID: {} not found.", id);
+            return ResponseEntity.notFound().build();
+        }
+
+        userRepository.deleteById(id);
+        log.info("Successfully deleted user with ID: {}", id);
+        return ResponseEntity.noContent().build();
     }
 }

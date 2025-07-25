@@ -7,8 +7,13 @@ import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
 import io.github.resilience4j.retry.annotation.Retry;
 import io.github.resilience4j.timelimiter.annotation.TimeLimiter;
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestTemplate;
@@ -16,6 +21,7 @@ import org.springframework.web.client.RestTemplate;
 @Service
 public class OrderService {
 
+    private static final Logger log = LoggerFactory.getLogger(OrderService.class);
     private final OrderRepository orderRepository;
     private final RestTemplate restTemplate;
 
@@ -33,11 +39,14 @@ public class OrderService {
         String sku = incomingOrder.getSku();
         Integer quantity = incomingOrder.getQuantity();
 
+        log.info("Placing order for SKU: {} with quantity: {}", sku, quantity);
+
         String inventoryUrl = "http://inventory-service/api/inventory/quantity/" + sku;
         Map<String, Object> inventoryResponse = restTemplate.getForObject(inventoryUrl, Map.class);
         Integer stockQuantity = (Integer) inventoryResponse.get("quantity");
 
         if (stockQuantity == null || stockQuantity < quantity) {
+            log.warn("Order failed! Product with SKU {} is out of stock.", sku);
             throw new IllegalArgumentException("Product is out of stock or insufficient quantity for SKU: " + sku);
         }
 
@@ -48,7 +57,10 @@ public class OrderService {
         incomingOrder.setOrderNumber(UUID.randomUUID().toString());
         incomingOrder.setPriceAtOrder(price);
 
-        return orderRepository.save(incomingOrder);
+        Order savedOrder = orderRepository.save(incomingOrder);
+        log.info("Order placed successfully! Order Number: {}", savedOrder.getOrderNumber());
+
+        return savedOrder;
     }
 
     public Order handleOrderFailure(Order incomingOrder, Throwable t) {
@@ -58,5 +70,17 @@ public class OrderService {
         System.out.println("==============================================");
 
         throw new RuntimeException("Sorry, we could not place your order at this time. Please try again later.");
+    }
+
+    @Transactional(readOnly = true)
+    public List<Order> getAllOrders() {
+        log.info("Fetching all orders from the database.");
+        return orderRepository.findAll();
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<Order> getOrderById(Long id) {
+        log.info("Fetching order with ID: {} from the database.", id);
+        return orderRepository.findById(id);
     }
 }
