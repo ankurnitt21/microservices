@@ -10,3 +10,5 @@
 # --- Build Artifacts ---
 # Ignore Maven's target directory
 target/
+
+all-logs/
