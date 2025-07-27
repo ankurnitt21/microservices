@@ -1,0 +1,12 @@
+# --- Secrets ---
+# Ignore the environment file containing secrets
+.env
+
+# --- IDE / Editor Files ---
+# Ignore IntelliJ IDEA files
+.idea/
+*.iml
+
+# --- Build Artifacts ---
+# Ignore Maven's target directory
+target/
