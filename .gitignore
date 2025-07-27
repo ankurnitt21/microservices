@@ -6,9 +6,39 @@
 # Ignore IntelliJ IDEA files
 .idea/
 *.iml
+*.iws
 
 # --- Build Artifacts ---
 # Ignore Maven's target directory
 target/
 
+# Ignore compiled class files (though 'target/' already covers this)
+*.class
+
+# Ignore generated JAR, WAR, EAR files
+*.jar
+*.war
+*.ear
+
+# Ignore log files that might be generated elsewhere
+*.log
+
 all-logs/
+
+# Ignore VS Code files
+.vscode/
+
+# =================================================
+# == Operating System Specific Files ==
+# =================================================
+# Ignore macOS files
+.DS_Store
+
+# Ignore Windows thumbnail cache files
+Thumbs.db
+
+# =================================================
+# == Maven Wrapper Specific Files ==
+# =================================================
+# The Maven Wrapper JAR file is downloaded automatically
+.mvn/wrapper/maven-wrapper.jar
