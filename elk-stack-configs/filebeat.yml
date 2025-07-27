@@ -1,0 +1,15 @@
+filebeat.inputs:
+- type: log
+  enabled: true
+  paths:
+    - /var/log/my-app-logs/*.log
+  json.keys_under_root: true
+  json.add_error_key: true
+
+output.kafka:
+  hosts: ["${KAFKA_BOOTSTRAP_URL}"]
+  topic: 'microservices_logs'
+  username: "${KAFKA_API_KEY}"
+  password: "${KAFKA_API_SECRET}"
+  ssl.enabled: true
+  sasl.mechanism: PLAIN

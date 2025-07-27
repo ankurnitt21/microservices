@@ -12,7 +12,7 @@ services:
       - POSTGRES_PASSWORD=1234567890
       - POSTGRES_DB=postgres
     networks:
-      - my-network
+      - shared-network
     volumes:
       - postgres_data:/var/lib/postgresql/data
     # Healthcheck to ensure database is ready
@@ -29,7 +29,7 @@ services:
     ports:
       - "8888:8888"
     networks:
-      - my-network
+      - shared-network
     healthcheck:
       test: "curl -f http://localhost:8888/actuator/health || exit 1"
       interval: 10s
@@ -44,7 +44,7 @@ services:
     ports:
       - "8761:8761"
     networks:
-      - my-network
+      - shared-network
     depends_on:
       config-server:
         condition: service_healthy
@@ -65,7 +65,7 @@ services:
     ports:
       - "8080:8080"
     networks:
-      - my-network
+      - shared-network
     depends_on:
       postgres-db:
         condition: service_healthy
@@ -75,6 +75,8 @@ services:
       - SPRING_CLOUD_CONFIG_URI=http://config-server:8888
       - DB_URL=jdbc:postgresql://postgres-db:5432/postgres
       - eureka.client.service-url.defaultZone=http://service-discovery:8761/eureka/
+    volumes:
+      - ./all-logs:/var/logs
 
   product-service:
     build: ./product-service
@@ -82,7 +84,7 @@ services:
     ports:
       - "8081:8081"
     networks:
-      - my-network
+      - shared-network
     depends_on:
       postgres-db:
         condition: service_healthy
@@ -105,7 +107,7 @@ services:
     ports:
       - "8082:8082"
     networks:
-      - my-network
+      - shared-network
     depends_on:
       postgres-db:
         condition: service_healthy
@@ -128,7 +130,7 @@ services:
     ports:
       - "8083:8083"
     networks:
-      - my-network
+      - shared-network
     depends_on:
       postgres-db:
         condition: service_healthy
@@ -150,7 +152,7 @@ services:
     ports:
       - "8085:8085"
     networks:
-      - my-network
+      - shared-network
     depends_on:
       service-discovery:
         condition: service_healthy
@@ -160,8 +162,9 @@ services:
 
 # Common network
 networks:
-  my-network:
+  shared-network:
     driver: bridge
+    name: shared-network
 
 # Database data volume
 volumes:

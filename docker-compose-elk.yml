@@ -1,0 +1,87 @@
+version: '3.8'
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.0
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    networks:
+      - elk-network
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:9200 || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.14.0
+    container_name: filebeat
+    user: root
+    volumes:
+      - ./all-logs:/var/log/my-app-logs:ro
+      - ./elk-stack-configs/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - filebeat_data:/usr/share/filebeat/data
+    environment:
+      KAFKA_BOOTSTRAP_URL: ${KAFKA_BOOTSTRAP_URL}
+      KAFKA_API_KEY: ${KAFKA_API_KEY}
+      KAFKA_API_SECRET: ${KAFKA_API_SECRET}
+    networks:
+      - elk-network
+    depends_on:
+      - elasticsearch
+    restart: unless-stopped
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.14.0
+    container_name: logstash
+    ports:
+      - "5044:5044"
+    volumes:
+      - ./elk-stack-configs/logstash.conf:/usr/share/logstash/pipeline/logstash.conf
+    networks:
+      - elk-network
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:9600 || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    environment:
+      KAFKA_BOOTSTRAP_URL: ${KAFKA_BOOTSTRAP_URL}
+      KAFKA_API_KEY: ${KAFKA_API_KEY}
+      KAFKA_API_SECRET: ${KAFKA_API_SECRET}
+
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.14.0
+    container_name: kibana
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    networks:
+      - elk-network
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  elk-network:
+    driver: bridge
+
+volumes:
+  elasticsearch_data:
+    driver: local
+  filebeat_data:
+    driver: local
