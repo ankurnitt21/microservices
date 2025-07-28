@@ -8,8 +8,8 @@ services:
     ports:
       - "5432:5432"
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=1234567890
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
       - POSTGRES_DB=postgres
     networks:
       - shared-network
@@ -72,8 +72,11 @@ services:
       service-discovery:
         condition: service_healthy
     environment:
+      - SPRING_PROFILES_ACTIVE=dev
       - SPRING_CLOUD_CONFIG_URI=http://config-server:8888
-      - DB_URL=jdbc:postgresql://postgres-db:5432/postgres
+      - SPRING_DATASOURCE_URL=${DB_URL}
+      - SPRING_DATASOURCE_USERNAME=${DB_USER}
+      - SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD}
       - eureka.client.service-url.defaultZone=http://service-discovery:8761/eureka/
     volumes:
       - ./all-logs:/var/logs
@@ -92,7 +95,9 @@ services:
         condition: service_healthy
     environment:
       - SPRING_CLOUD_CONFIG_URI=http://config-server:8888
-      - DB_URL=jdbc:postgresql://postgres-db:5432/postgres
+      - SPRING_DATASOURCE_URL=${DB_URL}
+      - SPRING_DATASOURCE_USERNAME=${DB_USER}
+      - SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD}
       - eureka.client.service-url.defaultZone=http://service-discovery:8761/eureka/
     healthcheck:
       test: "curl -f http://localhost:8081/actuator/health || exit 1"
@@ -115,7 +120,9 @@ services:
         condition: service_healthy
     environment:
       - SPRING_CLOUD_CONFIG_URI=http://config-server:8888
-      - DB_URL=jdbc:postgresql://postgres-db:5432/postgres
+      - SPRING_DATASOURCE_URL=${DB_URL}
+      - SPRING_DATASOURCE_USERNAME=${DB_USER}
+      - SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD}
       - eureka.client.service-url.defaultZone=http://service-discovery:8761/eureka/
     healthcheck:
       test: "curl -f http://localhost:8082/actuator/health || exit 1"
@@ -142,7 +149,9 @@ services:
         condition: service_healthy
     environment:
       - SPRING_CLOUD_CONFIG_URI=http://config-server:8888
-      - DB_URL=jdbc:postgresql://postgres-db:5432/postgres
+      - SPRING_DATASOURCE_URL=${DB_URL}
+      - SPRING_DATASOURCE_USERNAME=${DB_USER}
+      - SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD}
       - eureka.client.service-url.defaultZone=http://service-discovery:8761/eureka/
 
   # 5. API Gateway
