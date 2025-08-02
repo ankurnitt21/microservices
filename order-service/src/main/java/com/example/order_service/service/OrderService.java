@@ -31,10 +31,10 @@ public class OrderService {
     }
 
     @Transactional
-    @CircuitBreaker(name = "placeOrder", fallbackMethod = "handleOrderFailure")
-    @Retry(name = "placeOrder", fallbackMethod = "handleOrderFailure")
-    @RateLimiter(name = "placeOrder", fallbackMethod = "handleOrderFailure")
-    @TimeLimiter(name = "placeOrder")
+    //@CircuitBreaker(name = "placeOrder", fallbackMethod = "handleOrderFailure")
+    //@Retry(name = "placeOrder", fallbackMethod = "handleOrderFailure")
+    //@RateLimiter(name = "placeOrder", fallbackMethod = "handleOrderFailure")
+    //@TimeLimiter(name = "placeOrder")
     public Order placeOrder(Order incomingOrder) {
         String sku = incomingOrder.getSku();
         Integer quantity = incomingOrder.getQuantity();

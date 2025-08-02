@@ -78,6 +78,7 @@ services:
       - SPRING_DATASOURCE_USERNAME=${DB_USER}
       - SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD}
       - eureka.client.service-url.defaultZone=http://service-discovery:8761/eureka/
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
     volumes:
       - ./all-logs:/var/logs
 
@@ -99,6 +100,7 @@ services:
       - SPRING_DATASOURCE_USERNAME=${DB_USER}
       - SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD}
       - eureka.client.service-url.defaultZone=http://service-discovery:8761/eureka/
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
     healthcheck:
       test: "curl -f http://localhost:8081/actuator/health || exit 1"
       interval: 10s
@@ -124,6 +126,7 @@ services:
       - SPRING_DATASOURCE_USERNAME=${DB_USER}
       - SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD}
       - eureka.client.service-url.defaultZone=http://service-discovery:8761/eureka/
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
     healthcheck:
       test: "curl -f http://localhost:8082/actuator/health || exit 1"
       interval: 10s
@@ -153,6 +156,13 @@ services:
       - SPRING_DATASOURCE_USERNAME=${DB_USER}
       - SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD}
       - eureka.client.service-url.defaultZone=http://service-discovery:8761/eureka/
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+    healthcheck:
+      test: "curl -f http://localhost:8083/actuator/health || exit 1"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
 
   # 5. API Gateway
   api-gateway:
@@ -163,11 +173,15 @@ services:
     networks:
       - shared-network
     depends_on:
+      order-service:
+        condition: service_healthy
       service-discovery:
         condition: service_healthy
     environment:
       - SPRING_CLOUD_CONFIG_URI=http://config-server:8888
       - eureka.client.service-url.defaultZone=http://service-discovery:8761/eureka/
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
 
 # Common network
 networks:
