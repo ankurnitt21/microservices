@@ -183,6 +183,44 @@ services:
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
 
+  # 6. Prometheus Service
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - shared-network
+    volumes:
+      # Mount the configuration file we created
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    # It's good practice to wait for other services to be healthy
+    depends_on:
+      api-gateway:
+        condition: service_started # or service_healthy if you have a healthcheck
+      order-service:
+        condition: service_healthy
+
+  # 7. Grafana Service
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - shared-network
+    volumes:
+      # This named volume will persist your dashboards and configurations
+      - grafana_data:/var/lib/grafana
+    environment:
+      # This allows anonymous login for ease of use in development
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    depends_on:
+      - prometheus
+
+
 # Common network
 networks:
   shared-network:
@@ -192,4 +230,6 @@ networks:
 # Database data volume
 volumes:
   postgres_data:
+    driver: local
+  grafana_data:
     driver: local

@@ -1,0 +1,17 @@
+# prometheus/prometheus.yml
+
+global:
+  scrape_interval: 15s # How frequently to scrape targets.
+
+scrape_configs:
+  # This job discovers and scrapes our Spring Boot microservices
+  - job_name: 'spring-micrometer-services'
+    metrics_path: '/actuator/prometheus' # The path Actuator exposes metrics on
+    static_configs:
+      - targets:
+        # We use the service name and internal container port
+        - 'user-backend:8080'
+        - 'product-service:8081'
+        - 'inventory-service:8082'
+        - 'order-service:8083'
+        - 'api-gateway:8085'
