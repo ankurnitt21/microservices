@@ -79,6 +79,60 @@ public interface UpdateGroup {}
 - **Cross-field Validation**: Validate relationships between fields
 - **Conditional Validation**: Apply rules based on other field values
 
+### Create vs Update (Validation Groups)
+#### What
+Use validation groups to enforce stricter rules on create and more permissive rules on update.
+
+#### Deep Dive
+```java
+public class UserRequest {
+    public interface Create {}
+    public interface Update {}
+
+    @NotBlank(groups = {Create.class})
+    @Size(max = 255, groups = {Create.class, Update.class})
+    private String name;
+
+    @NotBlank(groups = {Create.class})
+    @Email(groups = {Create.class, Update.class})
+    @Size(max = 320, groups = {Create.class, Update.class})
+    private String email;
+}
+
+// Controller
+@PostMapping("/api/users")
+public ResponseEntity<UserResponse> create(@Validated(UserRequest.Create.class) @RequestBody UserRequest req) { ... }
+
+@PutMapping("/api/users/{id}")
+public ResponseEntity<UserResponse> update(@Validated(UserRequest.Update.class) @RequestBody UserRequest req) { ... }
+```
+
+#### Sequence Flow
+```
+Client -> Controller: POST /api/users {name,email}
+Controller (@Validated Create) -> Bean Validation: require name+email
+alt violations
+  -> 400 ProblemDetail
+else valid
+  -> Service -> persist -> 201
+end
+
+Client -> Controller: PUT /api/users/{id} {optional fields}
+Controller (@Validated Update) -> Bean Validation: validate only provided fields
+alt invalid provided field
+  -> 400 ProblemDetail
+else valid
+  -> Service: merge and save -> 200
+end
+```
+
+#### Examples
+```
+POST body: {"email":"a@b.com"} -> 400 (name required)
+PUT body:  {"email":"a@b.com"} -> 200 (name unchanged)
+PUT body:  {"email":"bad"}     -> 400 (email invalid)
+```
+
 ### Exception Handling
 ```java
 @ControllerAdvice
@@ -539,6 +593,45 @@ Controller -> Client: 200 Page<UserResponse> (JSON)
 - **Multiple Values**: Support for arrays and collections
 - **Custom Names**: Map different parameter names
 - **Type Conversion**: Automatic string-to-object conversion
+
+### Pagination Guardrails & Sort Whitelist
+#### What
+Validate paging inputs and restrict sortable fields to safe, indexed columns.
+
+#### Deep Dive
+```java
+@GetMapping
+public ResponseEntity<Page<UserResponse>> getUsers(
+        @RequestParam(defaultValue = "0") int page,
+        @RequestParam(defaultValue = "20") int size,
+        @RequestParam(defaultValue = "id,asc") String sort) {
+
+    if (page < 0) throw new IllegalArgumentException("page must be >= 0");
+    int max = 100;
+    if (size < 1 || size > max) throw new IllegalArgumentException("size must be between 1 and " + max);
+
+    String[] parts = sort.split(",");
+    String field = parts[0];
+    List<String> allowed = List.of("id", "name", "email");
+    if (!allowed.contains(field)) throw new IllegalArgumentException("invalid sort field: " + field);
+    Sort.Direction dir = parts.length > 1 && parts[1].equalsIgnoreCase("desc") ? Sort.Direction.DESC : Sort.Direction.ASC;
+
+    Pageable pageable = PageRequest.of(page, size, Sort.by(dir, field));
+    Page<User> users = userService.findAll(pageable);
+    return ResponseEntity.ok(users.map(userMapper::toResponse));
+}
+```
+
+#### Sequence Flow
+```
+Client -> Controller: GET /api/users?page=1&size=10&sort=name,desc
+Controller -> Validate: page>=0, size<=100, sort in [id,name,email]
+alt invalid
+  -> 400 ProblemDetail
+else valid
+  -> Pageable -> Service -> Repository -> 200 Page<UserResponse>
+end
+```
 
 ---
 
