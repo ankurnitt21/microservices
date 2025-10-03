@@ -48,6 +48,14 @@ public class GlobalExceptionHandler {
         pd.setDetail(ex.getMessage());
         return pd;
     }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ProblemDetail handleIllegalArgument(IllegalArgumentException ex) {
+        ProblemDetail pd = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        pd.setTitle("Invalid Request");
+        pd.setDetail(ex.getMessage());
+        return pd;
+    }
 }
 
 

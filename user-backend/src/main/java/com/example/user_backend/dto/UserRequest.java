@@ -6,13 +6,16 @@ import jakarta.validation.constraints.Size;
 
 public class UserRequest {
 
-    @NotBlank(message = "name must not be blank")
-    @Size(max = 255, message = "name must be at most 255 characters")
+    public interface Create {}
+    public interface Update {}
+
+    @NotBlank(message = "name must not be blank", groups = {Create.class})
+    @Size(max = 255, message = "name must be at most 255 characters", groups = {Create.class, Update.class})
     private String name;
 
-    @NotBlank(message = "email must not be blank")
-    @Email(message = "email must be a valid email address")
-    @Size(max = 320, message = "email must be at most 320 characters")
+    @NotBlank(message = "email must not be blank", groups = {Create.class})
+    @Email(message = "email must be a valid email address", groups = {Create.class, Update.class})
+    @Size(max = 320, message = "email must be at most 320 characters", groups = {Create.class, Update.class})
     private String email;
 
     public String getName() {

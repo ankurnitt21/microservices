@@ -37,11 +37,26 @@ public class UserController {
             @RequestParam(defaultValue = "id,asc") String sort
     ) {
         log.info("Received request to get all users page={}, size={}, sort={}", page, size, sort);
+
+        if (page < 0) {
+            throw new IllegalArgumentException("page must be >= 0");
+        }
+        int maxPageSize = 100;
+        if (size < 1 || size > maxPageSize) {
+            throw new IllegalArgumentException("size must be between 1 and " + maxPageSize);
+        }
+
         String[] sortParts = sort.split(",");
+        String sortField = sortParts[0];
+        String[] allowedSorts = new String[] {"id", "name", "email"};
+        boolean allowed = java.util.Arrays.asList(allowedSorts).contains(sortField);
+        if (!allowed) {
+            throw new IllegalArgumentException("invalid sort field: " + sortField);
+        }
         Sort.Direction direction = sortParts.length > 1 && sortParts[1].equalsIgnoreCase("desc")
                 ? Sort.Direction.DESC : Sort.Direction.ASC;
-        String sortBy = sortParts[0];
-        Pageable pageable = PageRequest.of(page, size, Sort.by(direction, sortBy));
+
+        Pageable pageable = PageRequest.of(page, size, Sort.by(direction, sortField));
         return userService.findAll(pageable).map(u -> new UserResponse(u.getId(), u.getName(), u.getEmail()));
     }
 
@@ -60,14 +75,14 @@ public class UserController {
     }
 
     @PostMapping
-    public ResponseEntity<UserResponse> addUser(@Validated @RequestBody UserRequest request) {
+    public ResponseEntity<UserResponse> addUser(@Validated(UserRequest.Create.class) @RequestBody UserRequest request) {
         User saved = userService.create(request);
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(new UserResponse(saved.getId(), saved.getName(), saved.getEmail()));
     }
 
     @PutMapping("/{id}")
-    public ResponseEntity<UserResponse> updateUser(@PathVariable Long id, @Validated @RequestBody UserRequest request) {
+    public ResponseEntity<UserResponse> updateUser(@PathVariable Long id, @Validated(UserRequest.Update.class) @RequestBody UserRequest request) {
         return userService.update(id, request)
                 .map(u -> ResponseEntity.ok(new UserResponse(u.getId(), u.getName(), u.getEmail())))
                 .orElse(ResponseEntity.notFound().build());

@@ -809,6 +809,243 @@ public ResponseEntity<UserResponse> patchUser(@PathVariable Long id, @RequestBod
 
 ---
 
+## @GetMapping
+
+### What
+Shortcut for `@RequestMapping(method = RequestMethod.GET)` to retrieve resources.
+
+### Why
+- **Read Operations**: Fetch resources without side effects
+- **Caching**: Safe and idempotent, friendly to caches and CDNs
+- **Semantics**: Aligns with REST conventions
+
+### Internal Working
+1. **HandlerMapping** resolves GET handler
+2. **Argument Resolvers** bind `@PathVariable`, `@RequestParam`, `@RequestHeader`
+3. **Return Handling** via `@ResponseBody`/`HttpMessageConverter`
+4. **Conditional GET** via ETag/Last-Modified if configured
+
+### Deep Dive
+```java
+@GetMapping
+public ResponseEntity<Page<UserResponse>> list(
+        @RequestParam(defaultValue = "0") int page,
+        @RequestParam(defaultValue = "20") int size,
+        @RequestParam(defaultValue = "id,asc") String sort) {
+    Pageable pageable = PageRequest.of(page, size,
+            Sort.by(Sort.Direction.fromString(sort.split(",")[1]), sort.split(",")[0]));
+    Page<User> users = userService.findAll(pageable);
+    return ResponseEntity.ok(users.map(userMapper::toResponse));
+}
+
+@GetMapping("/{id}")
+public ResponseEntity<UserResponse> get(@PathVariable Long id,
+                                        @RequestHeader(value = "If-None-Match", required = false) String etag) {
+    return userService.findById(id)
+            .map(u -> ResponseEntity.ok()
+                    .eTag("\"" + u.hashCode() + "\"")
+                    .body(userMapper.toResponse(u)))
+            .orElse(ResponseEntity.notFound().build());
+}
+```
+
+### Sequence Flow
+```
+Client -> HandlerMapping: GET /api/users/1
+HandlerMapping -> Controller: invoke method
+Controller -> Service: read data
+Service -> Controller: entity
+Controller -> HttpMessageConverter: serialize
+HttpMessageConverter -> Client: 200 JSON
+```
+
+### Advanced Features
+- **ETag/Last-Modified**: Conditional GETs
+- **Pagination**: `Pageable`, `Slice`
+- **Projection**: Sparse fieldsets or projections
+- **Caching**: Response caching headers
+
+---
+
+## @PostMapping
+
+### What
+Shortcut for `@RequestMapping(method = RequestMethod.POST)` to create resources or trigger server-side actions.
+
+### Why
+- **Creation Semantics**: Resource creation with 201 + Location
+- **Payload**: Submit JSON bodies safely
+- **Validation**: Natural place for input validation
+
+### Internal Working
+1. **Argument Resolver** binds `@RequestBody`
+2. **Validation** via `@Validated` and Bean Validation
+3. **Service Layer** performs creation
+4. **ResponseEntity** builds 201 with Location header
+
+### Deep Dive
+```java
+@PostMapping
+public ResponseEntity<UserResponse> create(@Validated @RequestBody UserRequest request) {
+    User user = userService.createUser(request);
+    return ResponseEntity.status(HttpStatus.CREATED)
+            .location(URI.create("/api/users/" + user.getId()))
+            .body(userMapper.toResponse(user));
+}
+```
+
+### Sequence Flow
+```
+Client -> Controller: POST /api/users (JSON)
+Controller -> Validation: validate DTO
+Validation -> Controller: OK
+Controller -> Service: createUser
+Service -> Repository: save
+Repository -> Service: persisted entity
+Service -> Controller: entity
+Controller -> Client: 201 Created + Location
+```
+
+### Advanced Features
+- **Idempotency-Key**: Deduplicate retries
+- **Server-side generated IDs**: Return Location
+- **Async processing**: 202 Accepted with polling
+
+---
+
+## @PutMapping
+
+### What
+Shortcut for `@RequestMapping(method = RequestMethod.PUT)` to replace resources fully.
+
+### Why
+- **Idempotent**: Safe to retry
+- **Full Update**: Clear intent to replace state
+- **Consistency**: Works well with ETag preconditions
+
+### Internal Working
+1. **Argument Resolver** binds `@RequestBody`
+2. **Validation** for complete payloads
+3. **Service** loads and updates entity
+4. **Return** 200 with resource or 204 if no body
+
+### Deep Dive
+```java
+@PutMapping("/{id}")
+public ResponseEntity<UserResponse> replace(
+        @PathVariable Long id,
+        @Validated @RequestBody UserRequest request) {
+    return userService.updateUser(id, request)
+            .map(u -> ResponseEntity.ok(userMapper.toResponse(u)))
+            .orElse(ResponseEntity.notFound().build());
+}
+```
+
+### Sequence Flow
+```
+Client -> Controller: PUT /api/users/1 (JSON)
+Controller -> Service: updateUser(id, dto)
+Service -> Repository: load + save
+Repository -> Service: updated entity
+Service -> Controller: entity
+Controller -> Client: 200 UserResponse
+```
+
+### Advanced Features
+- **ETag If-Match**: Prevent lost updates
+- **Partial failure**: Prefer PATCH for partial updates
+
+---
+
+## @DeleteMapping
+
+### What
+Shortcut for `@RequestMapping(method = RequestMethod.DELETE)` to delete resources.
+
+### Why
+- **Resource removal**: Clear semantics
+- **Idempotent**: Multiple deletes are safe
+- **RESTful**: Return 204 on success
+
+### Internal Working
+1. **Path binding** for resource id
+2. **Service** deletes by id
+3. **Return** 204 or 404 if not found
+
+### Deep Dive
+```java
+@DeleteMapping("/{id}")
+public ResponseEntity<Void> delete(@PathVariable Long id) {
+    boolean deleted = userService.deleteUser(id);
+    return deleted ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
+}
+```
+
+### Sequence Flow
+```
+Client -> Controller: DELETE /api/users/1
+Controller -> Service: deleteUser(1)
+Service -> Repository: deleteById
+alt existed
+  Repository -> Service: ok
+  Service -> Controller: true
+  Controller -> Client: 204 No Content
+else missing
+  Service -> Controller: false
+  Controller -> Client: 404 Not Found
+end
+```
+
+### Advanced Features
+- **Soft delete**: flag-based deletion
+- **Cascade rules**: DB-level constraints
+
+---
+
+## @PatchMapping
+
+### What
+Shortcut for `@RequestMapping(method = RequestMethod.PATCH)` to partially update resources.
+
+### Why
+- **Partial Updates**: Send only changed fields
+- **Efficiency**: Smaller payloads
+- **Semantics**: Non-idempotent by default (can be idempotent by design)
+
+### Internal Working
+1. **Argument Resolver** binds partial DTO or `Map<String,Object>`
+2. **Validation** conditional per-field
+3. **Service** merges changes and saves
+4. **Return** updated resource
+
+### Deep Dive
+```java
+@PatchMapping("/{id}")
+public ResponseEntity<UserResponse> patch(@PathVariable Long id,
+                                          @RequestBody Map<String, Object> updates) {
+    return userService.patchUser(id, updates)
+            .map(u -> ResponseEntity.ok(userMapper.toResponse(u)))
+            .orElse(ResponseEntity.notFound().build());
+}
+```
+
+### Sequence Flow
+```
+Client -> Controller: PATCH /api/users/1 (partial JSON)
+Controller -> Service: patchUser(id, updates)
+Service -> Repository: load entity
+Service -> Entity: apply partial changes
+Service -> Repository: save
+Repository -> Service: updated entity
+Service -> Controller: entity
+Controller -> Client: 200 UserResponse
+```
+
+### Advanced Features
+- **JSON Patch/Merge Patch**: RFC 6902/7386 support
+- **Field-level validation**: groups/conditional validators
+- **Conflict handling**: ETag preconditions
+
 ## Additional Web Layer Annotations
 
 ### @ControllerAdvice
