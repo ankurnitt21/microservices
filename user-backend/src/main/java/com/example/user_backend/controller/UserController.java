@@ -1,14 +1,22 @@
 package com.example.user_backend.controller;
 
+import com.example.user_backend.dto.UserRequest;
+import com.example.user_backend.dto.UserResponse;
 import com.example.user_backend.model.User;
-import com.example.user_backend.repository.UserRepository;
+import com.example.user_backend.service.UserService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.validation.annotation.Validated;
 
 import java.util.List;
-import java.util.Optional;
+import java.util.stream.Collectors;
 
 @CrossOrigin(origins = "http://localhost:3000")
 @RestController
@@ -16,74 +24,58 @@ import java.util.Optional;
 public class UserController {
 
     private static final Logger log = LoggerFactory.getLogger(UserController.class);
-    private static final Logger logger = LoggerFactory.getLogger(UserController.class);
-    private final UserRepository userRepository;
+    private final UserService userService;
 
-
-    public UserController(UserRepository userRepository) {
-        this.userRepository = userRepository;
+    public UserController(UserService userService) {
+        this.userService = userService;
     }
 
     @GetMapping
-    public List<User> getAllUsers() {
-        logger.info("This log is here because i'm testing ci/cd pipeline");
-        logger.info("Received request to get all users");
-        List<User> users = userRepository.findAll();
-        logger.debug("Fetched {} users from database", users.size());
-        return users;
+    public Page<UserResponse> getAllUsers(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(defaultValue = "id,asc") String sort
+    ) {
+        log.info("Received request to get all users page={}, size={}, sort={}", page, size, sort);
+        String[] sortParts = sort.split(",");
+        Sort.Direction direction = sortParts.length > 1 && sortParts[1].equalsIgnoreCase("desc")
+                ? Sort.Direction.DESC : Sort.Direction.ASC;
+        String sortBy = sortParts[0];
+        Pageable pageable = PageRequest.of(page, size, Sort.by(direction, sortBy));
+        return userService.findAll(pageable).map(u -> new UserResponse(u.getId(), u.getName(), u.getEmail()));
     }
 
-    @GetMapping("/name/{name}")
-    public ResponseEntity<User> getUserByName(@PathVariable String name) {
-        logger.info("Received request to get user by name: {}", name);
-        return userRepository.findByNameIgnoreCase(name)
-                .map(user -> {
-                    logger.debug("User found: {}", user);
-                    return ResponseEntity.ok(user);
-                })
-                .orElseGet(() -> {
-                    logger.warn("User with name '{}' not found", name);
-                    return ResponseEntity.notFound().build();
-                });
+    @GetMapping("/{id}")
+    public ResponseEntity<UserResponse> getUserById(@PathVariable Long id) {
+        return userService.findById(id)
+                .map(u -> ResponseEntity.ok(new UserResponse(u.getId(), u.getName(), u.getEmail())))
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    @GetMapping("/by-name/{name}")
+    public ResponseEntity<UserResponse> getUserByName(@PathVariable String name) {
+        return userService.findByName(name)
+                .map(u -> ResponseEntity.ok(new UserResponse(u.getId(), u.getName(), u.getEmail())))
+                .orElse(ResponseEntity.notFound().build());
     }
 
     @PostMapping
-    public ResponseEntity<User> addUser(@RequestBody User user) {
-        logger.info("Received request to add new user: {}", user);
-        User savedUser = userRepository.save(user);
-        logger.debug("User saved: {}", savedUser);
-        return ResponseEntity.ok(savedUser);
+    public ResponseEntity<UserResponse> addUser(@Validated @RequestBody UserRequest request) {
+        User saved = userService.create(request);
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(new UserResponse(saved.getId(), saved.getName(), saved.getEmail()));
     }
 
     @PutMapping("/{id}")
-    public ResponseEntity<User> updateUser(@PathVariable Long id, @RequestBody User userDetails) {
-        log.info("Request to update user with ID: {}", id);
-        Optional<User> optionalUser = userRepository.findById(id);
-
-        if (optionalUser.isEmpty()) {
-            log.warn("Cannot update. User with ID: {} not found.", id);
-            return ResponseEntity.notFound().build();
-        }
-
-        User existingUser = optionalUser.get();
-        existingUser.setName(userDetails.getName());
-        existingUser.setEmail(userDetails.getEmail());
-
-        User updatedUser = userRepository.save(existingUser);
-        log.info("Successfully updated user with ID: {}", updatedUser.getId());
-        return ResponseEntity.ok(updatedUser);
+    public ResponseEntity<UserResponse> updateUser(@PathVariable Long id, @Validated @RequestBody UserRequest request) {
+        return userService.update(id, request)
+                .map(u -> ResponseEntity.ok(new UserResponse(u.getId(), u.getName(), u.getEmail())))
+                .orElse(ResponseEntity.notFound().build());
     }
 
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> deleteUser(@PathVariable Long id) {
-        log.info("Request to delete user with ID: {}", id);
-        if (!userRepository.existsById(id)) {
-            log.warn("Cannot delete. User with ID: {} not found.", id);
-            return ResponseEntity.notFound().build();
-        }
-
-        userRepository.deleteById(id);
-        log.info("Successfully deleted user with ID: {}", id);
-        return ResponseEntity.noContent().build();
+        boolean deleted = userService.deleteById(id);
+        return deleted ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
     }
 }
