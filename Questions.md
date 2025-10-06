@@ -3975,3 +3975,2436 @@ Auto-configurations triggered:
     ✅ TransactionAutoConfiguration
 ```
 
+
+# Spring Boot Embedded Tomcat Deep Dive
+
+## 1. How Spring Boot Embeds Tomcat Internally
+
+Spring Boot embeds Tomcat by including it as a **library dependency** rather than deploying to an external server. The key dependencies are:
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+</dependency>
+```
+
+This transitively includes:
+- `spring-boot-starter-tomcat` (embedded Tomcat)
+- `tomcat-embed-core`
+- `tomcat-embed-el`
+- `tomcat-embed-websocket`
+
+Tomcat runs **in-process** within the JVM, started programmatically via its API.
+
+---
+
+## 2. What Class Actually Starts the Embedded Tomcat?
+
+**`ServletWebServerApplicationContext`** is the key class that triggers embedded server startup.
+
+The startup flow:
+
+```
+SpringApplication.run()
+  → refreshContext()
+    → ServletWebServerApplicationContext.refresh()
+      → onRefresh()
+        → createWebServer()
+          → getWebServerFactory() // Returns TomcatServletWebServerFactory
+            → factory.getWebServer(getSelfInitializer())
+              → TomcatWebServer constructor
+                → Tomcat.start()
+```
+
+**Key classes:**
+- `ServletWebServerApplicationContext` - Application context for servlet-based apps
+- `TomcatServletWebServerFactory` - Factory that creates `TomcatWebServer`
+- `TomcatWebServer` - Wrapper around Tomcat's lifecycle
+- `org.apache.catalina.startup.Tomcat` - Actual Tomcat server class
+
+---
+
+## 3. How Spring Boot Detects Which Embedded Server to Start
+
+Spring Boot uses **classpath detection** via `@Conditional` annotations:
+
+```java
+@Configuration(proxyBeanMethods = false)
+@ConditionalOnClass({ Servlet.class, Tomcat.class, UpgradeProtocol.class })
+@ConditionalOnMissingBean(value = ServletWebServerFactory.class)
+public static class EmbeddedTomcat {
+    @Bean
+    TomcatServletWebServerFactory tomcatServletWebServerFactory() {
+        return new TomcatServletWebServerFactory();
+    }
+}
+```
+
+The logic in `ServletWebServerFactoryAutoConfiguration`:
+
+1. **Checks classpath** for Tomcat classes → creates `TomcatServletWebServerFactory`
+2. If Tomcat not found, checks for Jetty → creates `JettyServletWebServerFactory`
+3. If neither, checks for Undertow → creates `UndertowServletWebServerFactory`
+
+**Order of precedence**: Tomcat → Jetty → Undertow
+
+---
+
+## 4. How to Change the Embedded Server to Jetty or Undertow
+
+### Exclude Tomcat and Add Jetty:
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+    <exclusions>
+        <exclusion>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-tomcat</artifactId>
+        </exclusion>
+    </exclusions>
+</dependency>
+
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-jetty</artifactId>
+</dependency>
+```
+
+### For Undertow:
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-undertow</artifactId>
+</dependency>
+```
+
+**Gradle example:**
+
+```gradle
+configurations {
+    compile.exclude module: 'spring-boot-starter-tomcat'
+}
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-jetty'
+}
+```
+
+---
+
+## 5. How `TomcatServletWebServerFactory` is Used Under the Hood
+
+`TomcatServletWebServerFactory` implements `ServletWebServerFactory` interface:
+
+```java
+public class TomcatServletWebServerFactory implements ServletWebServerFactory {
+    
+    @Override
+    public WebServer getWebServer(ServletContextInitializer... initializers) {
+        Tomcat tomcat = new Tomcat();
+        
+        // Configure connector (port, protocol, etc.)
+        Connector connector = new Connector(this.protocol);
+        connector.setPort(getPort());
+        tomcat.getService().addConnector(connector);
+        
+        // Prepare context
+        prepareContext(tomcat.getHost(), initializers);
+        
+        // Return wrapper
+        return getTomcatWebServer(tomcat);
+    }
+}
+```
+
+**Key responsibilities:**
+1. Creates `org.apache.catalina.startup.Tomcat` instance
+2. Configures connector (HTTP port, SSL, compression)
+3. Prepares servlet context
+4. Registers servlets via `ServletContextInitializer`
+5. Wraps Tomcat in `TomcatWebServer`
+
+---
+
+## 6. What Happens in `onRefresh()` of `ServletWebServerApplicationContext`
+
+```java
+@Override
+protected void onRefresh() {
+    super.onRefresh();
+    try {
+        createWebServer();
+    }
+    catch (Throwable ex) {
+        throw new ApplicationContextException("Unable to start web server", ex);
+    }
+}
+
+private void createWebServer() {
+    WebServer webServer = this.webServer;
+    ServletContext servletContext = getServletContext();
+    
+    if (webServer == null && servletContext == null) {
+        // Get factory from context (TomcatServletWebServerFactory)
+        ServletWebServerFactory factory = getWebServerFactory();
+        
+        // Create and start web server
+        this.webServer = factory.getWebServer(getSelfInitializer());
+    }
+    else if (servletContext != null) {
+        // External servlet container (WAR deployment)
+        getSelfInitializer().onStartup(servletContext);
+    }
+    
+    initPropertySources();
+}
+```
+
+**The flow:**
+1. Called during context refresh
+2. Retrieves `ServletWebServerFactory` bean (e.g., `TomcatServletWebServerFactory`)
+3. Calls `getWebServer()` which creates and starts Tomcat
+4. Stores reference to `WebServer` for lifecycle management
+
+---
+
+## 7. How to Customize Embedded Tomcat Port or Context Path Programmatically
+
+### Via `application.properties`:
+
+```properties
+server.port=9090
+server.servlet.context-path=/myapp
+```
+
+### Via `WebServerFactoryCustomizer`:
+
+```java
+@Component
+public class TomcatCustomizer implements WebServerFactoryCustomizer<TomcatServletWebServerFactory> {
+    
+    @Override
+    public void customize(TomcatServletWebServerFactory factory) {
+        factory.setPort(9090);
+        factory.setContextPath("/myapp");
+        
+        // Advanced customization
+        factory.addConnectorCustomizers(connector -> {
+            connector.setProperty("maxThreads", "200");
+            connector.setProperty("connectionTimeout", "20000");
+        });
+        
+        factory.addContextCustomizers(context -> {
+            context.setSessionTimeout(30);
+        });
+    }
+}
+```
+
+### Via `ConfigurableServletWebServerFactory` Bean:
+
+```java
+@Bean
+public ConfigurableServletWebServerFactory webServerFactory() {
+    TomcatServletWebServerFactory factory = new TomcatServletWebServerFactory();
+    factory.setPort(8081);
+    factory.addAdditionalTomcatConnectors(createSslConnector());
+    return factory;
+}
+```
+
+---
+
+## 8. How Servlets, Filters, and Listeners are Registered Automatically
+
+### Registration Mechanisms:
+
+**1. `@WebServlet`, `@WebFilter`, `@WebListener` annotations:**
+
+```java
+@WebServlet(urlPatterns = "/custom")
+public class CustomServlet extends HttpServlet { }
+```
+
+Enable with `@ServletComponentScan` on main class.
+
+**2. Bean registration (preferred in Spring Boot):**
+
+```java
+@Bean
+public FilterRegistrationBean<MyFilter> myFilter() {
+    FilterRegistrationBean<MyFilter> registration = new FilterRegistrationBean<>();
+    registration.setFilter(new MyFilter());
+    registration.addUrlPatterns("/api/*");
+    registration.setOrder(1);
+    return registration;
+}
+
+@Bean
+public ServletRegistrationBean<MyServlet> myServlet() {
+    return new ServletRegistrationBean<>(new MyServlet(), "/myservlet");
+}
+
+@Bean
+public ServletListenerRegistrationBean<MyListener> myListener() {
+    return new ServletListenerRegistrationBean<>(new MyListener());
+}
+```
+
+**3. Automatic registration via `ServletContextInitializer`:**
+
+All `ServletRegistrationBean`, `FilterRegistrationBean`, and `ServletListenerRegistrationBean` implement `ServletContextInitializer`. Spring Boot collects them and registers during context initialization:
+
+```java
+// Inside ServletWebServerFactory.getWebServer()
+for (ServletContextInitializer initializer : initializers) {
+    initializer.onStartup(servletContext);
+}
+```
+
+---
+
+## 9. How Spring Boot Integrates DispatcherServlet into Embedded Container
+
+**Automatic Registration:**
+
+`DispatcherServletAutoConfiguration` creates:
+
+```java
+@Bean
+@ConditionalOnBean(MultipartResolver.class)
+public DispatcherServlet dispatcherServlet() {
+    DispatcherServlet dispatcherServlet = new DispatcherServlet();
+    // configuration...
+    return dispatcherServlet;
+}
+
+@Bean
+public DispatcherServletRegistrationBean dispatcherServletRegistration(
+        DispatcherServlet dispatcherServlet) {
+    DispatcherServletRegistrationBean registration = 
+        new DispatcherServletRegistrationBean(dispatcherServlet, "/");
+    registration.setLoadOnStartup(1);
+    return registration;
+}
+```
+
+**The flow:**
+1. `DispatcherServlet` bean created with default config
+2. Wrapped in `DispatcherServletRegistrationBean` (extends `ServletRegistrationBean`)
+3. Mapped to `"/"` by default (configurable via `spring.mvc.servlet.path`)
+4. Registered via `ServletContextInitializer` mechanism when Tomcat starts
+
+---
+
+## 10. Lifecycle of Embedded Tomcat: Startup → Stop → Restart
+
+### Startup:
+
+```
+1. SpringApplication.run()
+2. prepareContext()
+3. refreshContext()
+4. ServletWebServerApplicationContext.onRefresh()
+5. createWebServer()
+6. TomcatServletWebServerFactory.getWebServer()
+7. new TomcatWebServer(tomcat)
+8. tomcat.start()
+9. Connector starts on configured port
+10. Application ready (ApplicationStartedEvent fired)
+```
+
+### Stop:
+
+```java
+// Triggered by:
+// - SIGTERM signal
+// - SpringApplication.exit()
+// - context.close()
+
+1. ServletWebServerApplicationContext.onClose()
+2. stopAndReleaseWebServer()
+3. webServer.stop()
+4. TomcatWebServer.stop()
+5. tomcat.stop()
+6. tomcat.destroy()
+7. Connector stops accepting requests
+8. Active requests complete (graceful shutdown if configured)
+9. Resources released
+```
+
+**Graceful shutdown configuration:**
+
+```properties
+server.shutdown=graceful
+spring.lifecycle.timeout-per-shutdown-phase=30s
+```
+
+### Restart:
+
+Spring Boot doesn't support restart natively, but **Spring Boot DevTools** provides it:
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-devtools</artifactId>
+</dependency>
+```
+
+**Restart mechanism:**
+1. DevTools monitors classpath changes
+2. Triggers context close
+3. Creates new ApplicationContext
+4. New Tomcat instance starts
+5. Uses two classloaders:
+   - **Base classloader** (JARs that don't change)
+   - **Restart classloader** (application classes)
+6. Only restart classloader is recreated, making restarts faster
+
+**Programmatic restart:**
+
+```java
+@Autowired
+private ApplicationContext context;
+
+public void restart() {
+    ApplicationArguments args = context.getBean(ApplicationArguments.class);
+    
+    Thread thread = new Thread(() -> {
+        context.close();
+        context = SpringApplication.run(MyApplication.class, args.getSourceArgs());
+    });
+    
+    thread.setDaemon(false);
+    thread.start();
+}
+```
+
+---
+
+## Key Takeaways
+
+1. **Tomcat is embedded** as a library, started programmatically
+2. **`ServletWebServerApplicationContext`** orchestrates the startup
+3. **Classpath detection** determines which server to use
+4. **`ServletWebServerFactory`** abstraction allows easy server swapping
+5. **Registration beans** provide declarative servlet/filter registration
+6. **`DispatcherServlet`** is auto-registered as the front controller
+7. **Lifecycle is managed** by Spring's application context
+
+This architecture makes Spring Boot apps **self-contained** and **cloud-native**, eliminating the need for external servlet containers.
+
+
+```
+# Spring Boot Deep Dive: Configuration, Proxies, AOP, Events & Startup
+
+## 1. How Spring Boot Loads External Configurations
+
+### Configuration Loading Order (Higher Priority Overrides Lower):
+
+```
+1. Devtools global settings (~/.spring-boot-devtools.properties)
+2. @TestPropertySource annotations
+3. @SpringBootTest properties attribute
+4. Command line arguments (--server.port=8080)
+5. SPRING_APPLICATION_JSON properties
+6. ServletConfig init parameters
+7. ServletContext init parameters
+8. JNDI attributes (java:comp/env)
+9. Java System properties (System.getProperties())
+10. OS environment variables
+11. RandomValuePropertySource (${random.*})
+12. Profile-specific outside jar (application-{profile}.properties)
+13. Profile-specific inside jar
+14. Application properties outside jar (application.properties)
+15. Application properties inside jar
+16. @PropertySource annotations
+17. Default properties (SpringApplication.setDefaultProperties)
+```
+
+### Internal Mechanism:
+
+```java
+// ConfigFileApplicationListener (now EnvironmentPostProcessor in newer versions)
+public class ConfigDataEnvironmentPostProcessor implements EnvironmentPostProcessor {
+    
+    @Override
+    public void postProcessEnvironment(ConfigurableEnvironment environment,
+                                      SpringApplication application) {
+        // 1. Load property sources
+        ConfigDataEnvironment configDataEnvironment = 
+            new ConfigDataEnvironment(environment, resourceLoader, locations);
+        
+        // 2. Process in order
+        configDataEnvironment.processAndApply();
+    }
+}
+```
+
+### Loading Flow:
+
+```
+SpringApplication.run()
+  → prepareEnvironment()
+    → EnvironmentPostProcessors.postProcessEnvironment()
+      → ConfigDataEnvironmentPostProcessor
+        → ConfigDataLocationResolvers.resolve()
+          → StandardConfigDataLocationResolver
+            → Load application.properties
+            → Load application.yml
+            → Load application-{profile}.properties
+        → ConfigDataLoaders.load()
+          → PropertiesPropertySourceLoader
+          → YamlPropertySourceLoader
+        → Add to Environment.propertySources
+```
+
+### Example Configuration Sources:
+
+```java
+@Component
+public class ConfigDemo {
+    
+    @Autowired
+    private Environment env;
+    
+    public void showSources() {
+        ConfigurableEnvironment environment = (ConfigurableEnvironment) env;
+        
+        for (PropertySource<?> ps : environment.getPropertySources()) {
+            System.out.println(ps.getName() + " - " + ps.getClass());
+            // Output:
+            // configurationProperties
+            // systemProperties (System.getProperties())
+            // systemEnvironment (OS env vars)
+            // random
+            // applicationConfig: [classpath:/application.properties]
+        }
+    }
+}
+```
+
+---
+
+## 2. How `@ConfigurationProperties` Works Internally
+
+### Example:
+
+```java
+@ConfigurationProperties(prefix = "playstation")
+@Component
+public class PlayStationConfig {
+    private String model;
+    private int maxPlayers;
+    private Storage storage;
+    
+    // Nested configuration
+    public static class Storage {
+        private int capacity;
+        private String type;
+        // getters/setters
+    }
+    // getters/setters
+}
+```
+
+```properties
+playstation.model=PS5
+playstation.max-players=4
+playstation.storage.capacity=825
+playstation.storage.type=SSD
+```
+
+### Internal Mechanism:
+
+```java
+// ConfigurationPropertiesBindingPostProcessor
+public class ConfigurationPropertiesBindingPostProcessor 
+        implements BeanPostProcessor {
+    
+    @Override
+    public Object postProcessBeforeInitialization(Object bean, String beanName) {
+        // 1. Find @ConfigurationProperties annotation
+        ConfigurationProperties annotation = 
+            AnnotationUtils.findAnnotation(bean.getClass(), ConfigurationProperties.class);
+        
+        if (annotation != null) {
+            // 2. Bind properties
+            bind(bean, annotation);
+        }
+        return bean;
+    }
+    
+    private void bind(Object bean, ConfigurationProperties annotation) {
+        // 3. Create Binder
+        Binder binder = Binder.get(environment);
+        
+        // 4. Bind using prefix
+        BindResult<?> result = binder.bind(
+            annotation.prefix(),
+            Bindable.ofInstance(bean)
+        );
+    }
+}
+```
+
+### The Binding Process:
+
+```
+1. @ConfigurationProperties detected by ConfigurationPropertiesBindingPostProcessor
+2. Binder created from Environment
+3. ConfigurationPropertySource adapters wrap property sources
+4. Property names converted (kebab-case → camelCase)
+   playstation.max-players → maxPlayers
+5. JavaBean properties populated via setters
+6. Validation performed if @Validated present
+7. Bean returned to container
+```
+
+---
+
+## 3. Role of `Binder` and `ConfigurationPropertySource`
+
+### `Binder` - The Binding Engine:
+
+```java
+public class Binder {
+    
+    private final Iterable<ConfigurationPropertySource> sources;
+    
+    // Main binding method
+    public <T> BindResult<T> bind(String name, Bindable<T> target) {
+        // 1. Parse configuration property name
+        ConfigurationPropertyName propertyName = 
+            ConfigurationPropertyName.of(name);
+        
+        // 2. Find property in sources
+        ConfigurationProperty property = findProperty(propertyName);
+        
+        // 3. Convert and bind value
+        Object boundValue = bindObject(propertyName, target, property);
+        
+        return BindResult.of((T) boundValue);
+    }
+    
+    private Object bindObject(ConfigurationPropertyName name, 
+                             Bindable<?> target,
+                             ConfigurationProperty property) {
+        // Handle different binding types:
+        // - Simple types (String, int, boolean)
+        // - Collections (List, Set, Map)
+        // - Nested objects (PlayStationConfig.Storage)
+        // - Arrays
+    }
+}
+```
+
+### `ConfigurationPropertySource` - Property Adapter:
+
+```java
+// Adapts PropertySource to ConfigurationPropertySource
+public interface ConfigurationPropertySource {
+    
+    // Get property value
+    ConfigurationProperty getConfigurationProperty(ConfigurationPropertyName name);
+    
+    // Iterate over properties
+    Iterator<ConfigurationPropertyName> iterator();
+}
+
+// Example: SpringConfigurationPropertySource
+public class SpringConfigurationPropertySource 
+        implements ConfigurationPropertySource {
+    
+    private final PropertySource<?> propertySource;
+    
+    @Override
+    public ConfigurationProperty getConfigurationProperty(
+            ConfigurationPropertyName name) {
+        // Convert name to different formats and try each:
+        // playstation.maxPlayers
+        // playstation.max-players
+        // playstation.max_players
+        // PLAYSTATION_MAX_PLAYERS (env vars)
+        
+        for (String candidate : name.getCandidates()) {
+            Object value = propertySource.getProperty(candidate);
+            if (value != null) {
+                return ConfigurationProperty.of(name, value);
+            }
+        }
+        return null;
+    }
+}
+```
+
+### Example with Gamer Configuration:
+
+```java
+@ConfigurationProperties(prefix = "gamer")
+@Validated
+@Component
+public class GamerConfig {
+    
+    @NotBlank
+    private String username;
+    
+    @Min(1)
+    @Max(100)
+    private int level;
+    
+    private List<String> favoriteGames;
+    private Map<String, Integer> achievements;
+    
+    // getters/setters
+}
+```
+
+```yaml
+gamer:
+  username: ProGamer123
+  level: 42
+  favorite-games:
+    - God of War
+    - The Last of Us
+    - Spider-Man
+  achievements:
+    trophies: 150
+    platinums: 5
+```
+
+**Binding process:**
+1. `Binder` looks for `gamer.*` properties
+2. `ConfigurationPropertySource` finds `gamer.username`, `gamer.level`, etc.
+3. List binding: Collects `gamer.favorite-games[0]`, `[1]`, `[2]`
+4. Map binding: Collects `gamer.achievements.trophies`, `.platinums`
+5. Validation runs (`@Validated` triggers `javax.validation`)
+6. Fully populated `GamerConfig` bean returned
+
+---
+
+## 4. How Spring Boot Creates Proxy Beans (JDK vs CGLIB)
+
+### Decision Logic:
+
+```java
+public class DefaultAopProxyFactory implements AopProxyFactory {
+    
+    @Override
+    public AopProxy createAopProxy(AdvisedSupport config) {
+        
+        // Use CGLIB if:
+        // 1. proxyTargetClass = true, OR
+        // 2. No interfaces implemented, OR
+        // 3. Proxy only has SpringProxy interface
+        
+        if (config.isOptimize() || 
+            config.isProxyTargetClass() || 
+            hasNoUserSuppliedProxyInterfaces(config)) {
+            
+            Class<?> targetClass = config.getTargetClass();
+            if (targetClass.isInterface()) {
+                return new JdkDynamicAopProxy(config);
+            }
+            return new ObjenesisCglibAopProxy(config);
+        }
+        else {
+            // Use JDK dynamic proxy (interface-based)
+            return new JdkDynamicAopProxy(config);
+        }
+    }
+}
+```
+
+### JDK Dynamic Proxy:
+
+```java
+// Requires interface
+public interface GamerService {
+    void playGame(String game);
+}
+
+@Service
+@Transactional
+public class GamerServiceImpl implements GamerService {
+    @Override
+    public void playGame(String game) {
+        System.out.println("Playing: " + game);
+    }
+}
+
+// Behind the scenes:
+public class JdkDynamicAopProxy implements InvocationHandler {
+    
+    @Override
+    public Object invoke(Object proxy, Method method, Object[] args) {
+        // 1. Get interceptor chain
+        List<Object> chain = this.advised.getInterceptorsAndDynamicInterceptionAdvice(method);
+        
+        // 2. Execute interceptors (transaction, security, etc.)
+        MethodInvocation invocation = 
+            new ReflectiveMethodInvocation(proxy, target, method, args, chain);
+        
+        // 3. Proceed with invocation
+        return invocation.proceed();
+    }
+}
+
+// Proxy created:
+GamerService proxy = (GamerService) Proxy.newProxyInstance(
+    classLoader,
+    new Class<?>[] { GamerService.class },
+    new JdkDynamicAopProxy(config)
+);
+```
+
+### CGLIB Proxy (Subclass-based):
+
+```java
+// No interface - CGLIB required
+@Service
+@Transactional
+public class PlayStationService {
+    
+    public void startConsole() {
+        System.out.println("PS5 starting...");
+    }
+}
+
+// Behind the scenes:
+public class CglibAopProxy implements AopProxy {
+    
+    @Override
+    public Object getProxy() {
+        // 1. Create Enhancer
+        Enhancer enhancer = new Enhancer();
+        enhancer.setSuperclass(targetClass); // Extends PlayStationService
+        enhancer.setInterfaces(interfaces);
+        enhancer.setCallbacks(getCallbacks()); // Transaction interceptor, etc.
+        
+        // 2. Create proxy subclass
+        return enhancer.create();
+    }
+}
+
+// Generated class (conceptual):
+public class PlayStationService$$EnhancerBySpringCGLIB$$abcd1234 
+        extends PlayStationService {
+    
+    @Override
+    public void startConsole() {
+        // Interceptor logic here
+        MethodInterceptor interceptor = ...; // Transaction interceptor
+        interceptor.intercept(this, method, args, methodProxy);
+    }
+}
+```
+
+### Force CGLIB:
+
+```java
+@SpringBootApplication
+@EnableTransactionManagement(proxyTargetClass = true) // Force CGLIB
+public class Application {
+}
+
+// Or globally:
+spring.aop.proxy-target-class=true
+```
+
+---
+
+## 5. How Transaction Management Works Behind the Scenes
+
+### Example:
+
+```java
+@Service
+public class GameSaveService {
+    
+    @Autowired
+    private GameRepository gameRepository;
+    
+    @Transactional
+    public void saveProgress(Game game) {
+        gameRepository.save(game);
+        // If exception occurs here, transaction rolls back
+    }
+}
+```
+
+### Internal Mechanism:
+
+```java
+// TransactionInterceptor (part of proxy chain)
+public class TransactionInterceptor extends TransactionAspectSupport 
+        implements MethodInterceptor {
+    
+    @Override
+    public Object invoke(MethodInvocation invocation) throws Throwable {
+        
+        // 1. Get transaction attribute
+        TransactionAttribute txAttr = 
+            getTransactionAttributeSource().getTransactionAttribute(
+                invocation.getMethod(), targetClass);
+        
+        // 2. Get transaction manager
+        PlatformTransactionManager tm = determineTransactionManager(txAttr);
+        
+        // 3. Execute in transaction
+        return invokeWithinTransaction(invocation.getMethod(), 
+                                      targetClass, 
+                                      invocation::proceed, 
+                                      txAttr, 
+                                      tm);
+    }
+}
+
+// Core transaction handling
+protected Object invokeWithinTransaction(Method method, 
+                                        Class<?> targetClass,
+                                        InvocationCallback invocation,
+                                        TransactionAttribute txAttr,
+                                        PlatformTransactionManager tm) {
+    
+    // 1. Create transaction
+    TransactionInfo txInfo = createTransactionIfNecessary(tm, txAttr, methodId);
+    
+    Object retVal = null;
+    try {
+        // 2. Invoke actual method
+        retVal = invocation.proceedWithInvocation();
+    }
+    catch (Throwable ex) {
+        // 3. Handle exception - rollback if needed
+        completeTransactionAfterThrowing(txInfo, ex);
+        throw ex;
+    }
+    finally {
+        cleanupTransactionInfo(txInfo);
+    }
+    
+    // 4. Commit transaction
+    commitTransactionAfterReturning(txInfo);
+    return retVal;
+}
+```
+
+### Transaction Flow:
+
+```
+1. Method call → saveProgress(game)
+2. Proxy intercepts call
+3. TransactionInterceptor.invoke()
+4. Check for existing transaction (propagation)
+5. Begin new transaction:
+   - Get Connection from DataSource
+   - connection.setAutoCommit(false)
+   - Bind to ThreadLocal (TransactionSynchronizationManager)
+6. Invoke actual method: gameRepository.save(game)
+7. Success: Commit
+   - connection.commit()
+   - Release connection
+8. Exception: Rollback
+   - connection.rollback()
+   - Release connection
+```
+
+### Propagation Example:
+
+```java
+@Service
+public class GamerService {
+    
+    @Transactional(propagation = Propagation.REQUIRED)
+    public void updateProfile(Gamer gamer) {
+        gamerRepository.save(gamer);
+        achievementService.unlockAchievement(gamer.getId()); // Joins transaction
+    }
+}
+
+@Service
+public class AchievementService {
+    
+    @Transactional(propagation = Propagation.REQUIRED)
+    public void unlockAchievement(Long gamerId) {
+        // Uses same transaction as updateProfile
+        Achievement achievement = new Achievement(gamerId);
+        achievementRepository.save(achievement);
+        
+        // If exception here, both gamer and achievement rollback
+    }
+    
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void logEvent(String event) {
+        // Creates NEW transaction, independent of parent
+        logRepository.save(new Log(event));
+        // Commits separately, even if parent rolls back
+    }
+}
+```
+
+---
+
+## 6. How Spring Boot Performs AOP Proxy Creation and Weaving
+
+### AOP Proxy Creation Flow:
+
+```java
+// AbstractAutoProxyCreator (BeanPostProcessor)
+public abstract class AbstractAutoProxyCreator implements BeanPostProcessor {
+    
+    @Override
+    public Object postProcessAfterInitialization(Object bean, String beanName) {
+        
+        // 1. Check if bean needs proxying
+        if (isInfrastructureClass(bean.getClass()) || shouldSkip(bean.getClass())) {
+            return bean;
+        }
+        
+        // 2. Get advisors (advice + pointcut)
+        Object[] specificInterceptors = getAdvicesAndAdvisorsForBean(
+            bean.getClass(), beanName, null);
+        
+        if (specificInterceptors != DO_NOT_PROXY) {
+            // 3. Create proxy
+            return createProxy(bean.getClass(), beanName, 
+                             specificInterceptors, new SingletonTargetSource(bean));
+        }
+        
+        return bean;
+    }
+}
+```
+
+### Advisor Matching:
+
+```java
+@Aspect
+@Component
+public class GameLoggingAspect {
+    
+    // Pointcut - defines WHERE advice applies
+    @Pointcut("execution(* com.game..*.play*(..))")
+    public void gamePlayMethods() {}
+    
+    // Advice - defines WHAT to do
+    @Before("gamePlayMethods()")
+    public void logBefore(JoinPoint joinPoint) {
+        System.out.println("Starting: " + joinPoint.getSignature().getName());
+    }
+    
+    @AfterReturning(pointcut = "gamePlayMethods()", returning = "result")
+    public void logAfter(JoinPoint joinPoint, Object result) {
+        System.out.println("Completed: " + joinPoint.getSignature().getName());
+    }
+    
+    @Around("@annotation(Timed)")
+    public Object measureTime(ProceedingJoinPoint pjp) throws Throwable {
+        long start = System.currentTimeMillis();
+        Object result = pjp.proceed();
+        long end = System.currentTimeMillis();
+        System.out.println("Execution time: " + (end - start) + "ms");
+        return result;
+    }
+}
+```
+
+### Weaving Process:
+
+```
+1. @EnableAspectJAutoProxy triggers AspectJAutoProxyRegistrar
+2. Registers AnnotationAwareAspectJAutoProxyCreator (BeanPostProcessor)
+3. During bean creation:
+   a. Bean instantiated
+   b. postProcessAfterInitialization() called
+   c. Find all @Aspect beans
+   d. Parse pointcuts using AspectJ expression parser
+   e. Match pointcuts against current bean's methods
+   f. Create advisors (Advice + Pointcut)
+   g. Sort advisors by @Order
+   h. Create proxy if advisors found
+4. Proxy wraps original bean
+5. Interceptor chain built
+```
+
+### Interceptor Chain Execution:
+
+```java
+public class ReflectiveMethodInvocation implements ProxyMethodInvocation {
+    
+    protected final List<?> interceptorsAndDynamicMethodMatchers;
+    private int currentInterceptorIndex = -1;
+    
+    @Override
+    public Object proceed() throws Throwable {
+        
+        // End of chain - invoke target method
+        if (this.currentInterceptorIndex == 
+            this.interceptorsAndDynamicMethodMatchers.size() - 1) {
+            return invokeJoinpoint();
+        }
+        
+        // Get next interceptor
+        Object interceptorOrInterceptionAdvice = 
+            this.interceptorsAndDynamicMethodMatchers
+                .get(++this.currentInterceptorIndex);
+        
+        // Execute interceptor
+        if (interceptorOrInterceptionAdvice instanceof MethodInterceptor) {
+            MethodInterceptor mi = (MethodInterceptor) interceptorOrInterceptionAdvice;
+            return mi.invoke(this); // Recursive call to proceed()
+        }
+    }
+}
+```
+
+**Example chain for `@Transactional` + `@Async` + `@Before`:**
+```
+playGame() called
+  → ExposeInvocationInterceptor
+    → TransactionInterceptor (start transaction)
+      → AsyncExecutionInterceptor (async handling)
+        → AspectJBeforeAdvice (logging)
+          → Actual method execution
+        ← Return
+      ← Async completion
+    ← Commit transaction
+  ← Return proxy result
+```
+
+---
+
+## 7. Application Events in Spring Boot
+
+### Built-in Events:
+
+```java
+// Event sequence during startup:
+ApplicationStartingEvent           // Very early, before any processing
+  → ApplicationEnvironmentPreparedEvent  // Environment ready, context not created
+    → ApplicationContextInitializedEvent // Context created, not refreshed
+      → ApplicationPreparedEvent         // Context loaded, not refreshed
+        → ContextRefreshedEvent          // Context refreshed, beans created
+          → ApplicationStartedEvent      // Context refreshed, runners not yet called
+            → ApplicationReadyEvent      // Application ready to serve requests
+            
+// On shutdown:
+ContextClosedEvent                 // Context about to close
+```
+
+### Custom Events with PlayStation Example:
+
+```java
+// 1. Custom Event
+public class GameLaunchedEvent extends ApplicationEvent {
+    private final String gameName;
+    private final String playerName;
+    
+    public GameLaunchedEvent(Object source, String gameName, String playerName) {
+        super(source);
+        this.gameName = gameName;
+        this.playerName = playerName;
+    }
+    // getters
+}
+
+// 2. Event Publisher
+@Service
+public class PlayStationService {
+    
+    @Autowired
+    private ApplicationEventPublisher eventPublisher;
+    
+    public void launchGame(String gameName, String playerName) {
+        System.out.println("Launching " + gameName);
+        
+        // Publish event
+        GameLaunchedEvent event = new GameLaunchedEvent(this, gameName, playerName);
+        eventPublisher.publishEvent(event);
+    }
+}
+
+// 3. Event Listeners
+
+// Method 1: @EventListener
+@Component
+public class AchievementListener {
+    
+    @EventListener
+    public void onGameLaunched(GameLaunchedEvent event) {
+        System.out.println(event.getPlayerName() + 
+                          " launched " + event.getGameName());
+        // Update play count, check achievements, etc.
+    }
+    
+    // Can listen to multiple events
+    @EventListener({GameLaunchedEvent.class, GameCompletedEvent.class})
+    public void handleGameEvents(ApplicationEvent event) {
+        // Handle both types
+    }
+    
+    // Conditional listening
+    @EventListener(condition = "#event.gameName == 'God of War'")
+    public void onGodOfWarLaunched(GameLaunchedEvent event) {
+        System.out.println("God of War launched! Epic!");
+    }
+    
+    // Async listener
+    @Async
+    @EventListener
+    public void asyncHandler(GameLaunchedEvent event) {
+        // Runs in separate thread
+    }
+}
+
+// Method 2: ApplicationListener interface
+@Component
+public class StatisticsListener implements ApplicationListener<GameLaunchedEvent> {
+    
+    @Override
+    public void onApplicationEvent(GameLaunchedEvent event) {
+        // Update statistics
+        updatePlayerStats(event.getPlayerName());
+    }
+}
+
+// Method 3: @TransactionalEventListener
+@Component
+public class TrophyListener {
+    
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    public void onGameLaunchedAfterCommit(GameLaunchedEvent event) {
+        // Only executed after transaction commits
+        // Useful for sending notifications, etc.
+    }
+}
+```
+
+### Event Publishing Mechanism:
+
+```java
+public abstract class AbstractApplicationContext {
+    
+    private ApplicationEventMulticaster applicationEventMulticaster;
+    
+    @Override
+    public void publishEvent(ApplicationEvent event) {
+        publishEvent(event, null);
+    }
+    
+    protected void publishEvent(Object event, ResolvableType eventType) {
+        
+        // 1. Wrap in PayloadApplicationEvent if needed
+        ApplicationEvent applicationEvent = 
+            (event instanceof ApplicationEvent ? 
+             (ApplicationEvent) event : 
+             new PayloadApplicationEvent<>(this, event));
+        
+        // 2. Multicast to listeners
+        getApplicationEventMulticaster()
+            .multicastEvent(applicationEvent, eventType);
+        
+        // 3. Publish to parent context if exists
+        if (this.parent != null) {
+            this.parent.publishEvent(event);
+        }
+    }
+}
+
+// SimpleApplicationEventMulticaster
+public class SimpleApplicationEventMulticaster {
+    
+    @Override
+    public void multicastEvent(ApplicationEvent event, ResolvableType eventType) {
+        
+        ResolvableType type = (eventType != null ? eventType : 
+                              ResolvableType.forInstance(event));
+        
+        // Get matching listeners
+        for (ApplicationListener<?> listener : getApplicationListeners(event, type)) {
+            
+            // Execute listener (sync or async based on executor)
+            Executor executor = getTaskExecutor();
+            if (executor != null) {
+                executor.execute(() -> invokeListener(listener, event));
+            } else {
+                invokeListener(listener, event);
+            }
+        }
+    }
+}
+```
+
+### Event Ordering:
+
+```java
+@Component
+@Order(1)  // Executes first
+public class FirstListener implements ApplicationListener<GameLaunchedEvent> {
+    @Override
+    public void onApplicationEvent(GameLaunchedEvent event) {
+        System.out.println("First");
+    }
+}
+
+@Component
+@Order(2)  // Executes second
+public class SecondListener implements ApplicationListener<GameLaunchedEvent> {
+    @Override
+    public void onApplicationEvent(GameLaunchedEvent event) {
+        System.out.println("Second");
+    }
+}
+```
+
+---
+
+## 8. How Spring Boot Handles Error Pages and Exception Mapping
+
+### Default Error Handling:
+
+```java
+// BasicErrorController (auto-configured)
+@Controller
+@RequestMapping("${server.error.path:${error.path:/error}}")
+public class BasicErrorController extends AbstractErrorController {
+    
+    // HTML error response (browser)
+    @RequestMapping(produces = MediaType.TEXT_HTML_VALUE)
+    public ModelAndView errorHtml(HttpServletRequest request, 
+                                 HttpServletResponse response) {
+        HttpStatus status = getStatus(request);
+        Map<String, Object> model = getErrorAttributes(request, 
+            getErrorAttributeOptions(request));
+        
+        response.setStatus(status.value());
+        
+        // Looks for error view (error/404.html, error/5xx.html)
+        ModelAndView modelAndView = resolveErrorView(request, response, status, model);
+        return (modelAndView != null) ? modelAndView : new ModelAndView("error", model);
+    }
+    
+    // JSON error response (REST clients)
+    @RequestMapping
+    public ResponseEntity<Map<String, Object>> error(HttpServletRequest request) {
+        HttpStatus status = getStatus(request);
+        Map<String, Object> body = getErrorAttributes(request, 
+            getErrorAttributeOptions(request));
+        
+        return new ResponseEntity<>(body, status);
+    }
+}
+```
+
+### Custom Error Pages:
+
+```
+src/main/resources/
+  templates/
+    error/
+      404.html          // Not Found
+      5xx.html          // Server Errors
+      error.html        // Generic error
+  public/
+    error/
+      404.html          // Static error page
+```
+
+### Exception Handling Flow:
+
+```
+1. Exception thrown in controller
+2. DispatcherServlet catches it
+3. HandlerExceptionResolver chain processes:
+   a. ExceptionHandlerExceptionResolver (@ExceptionHandler methods)
+   b. ResponseStatusExceptionResolver (@ResponseStatus)
+   c. DefaultHandlerExceptionResolver (Spring MVC exceptions)
+4. If unhandled, forwarded to /error
+5. BasicErrorController handles it
+6. Returns error view or JSON response
+```
+
+### Custom Exception Handling:
+
+```java
+// Global Exception Handler
+@ControllerAdvice
+public class GameExceptionHandler {
+    
+    @ExceptionHandler(GameNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleGameNotFound(
+            GameNotFoundException ex, WebRequest request) {
+        
+        ErrorResponse error = new ErrorResponse(
+            HttpStatus.NOT_FOUND.value(),
+            ex.getMessage(),
+            request.getDescription(false)
+        );
+        
+        return new ResponseEntity<>(error, HttpStatus.NOT_FOUND);
+    }
+    
+    @ExceptionHandler(PlayerNotAuthorizedException.class)
+    @ResponseStatus(HttpStatus.FORBIDDEN)
+    public ModelAndView handleNotAuthorized(PlayerNotAuthorizedException ex) {
+        ModelAndView mav = new ModelAndView("error/403");
+        mav.addObject("message", ex.getMessage());
+        return mav;
+    }
+    
+    // Handle all other exceptions
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ErrorResponse> handleGlobalException(
+            Exception ex, WebRequest request) {
+        
+        ErrorResponse error = new ErrorResponse(
+            HttpStatus.INTERNAL_SERVER_ERROR.value(),
+            "An error occurred",
+            request.getDescription(false)
+        );
+        
+        return new ResponseEntity<>(error, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+}
+
+// Custom Exception
+@ResponseStatus(HttpStatus.NOT_FOUND)
+public class GameNotFoundException extends RuntimeException {
+    public GameNotFoundException(String gameName) {
+        super("Game not found: " + gameName);
+    }
+}
+
+// Usage in controller
+@RestController
+@RequestMapping("/api/games")
+public class GameController {
+    
+    @GetMapping("/{id}")
+    public Game getGame(@PathVariable Long id) {
+        return gameRepository.findById(id)
+            .orElseThrow(() -> new GameNotFoundException("ID: " + id));
+        // Automatically handled by GameExceptionHandler
+    }
+}
+```
+
+### Custom Error Attributes:
+
+```java
+@Component
+public class CustomErrorAttributes extends DefaultErrorAttributes {
+    
+    @Override
+    public Map<String, Object> getErrorAttributes(WebRequest webRequest, 
+                                                  ErrorAttributeOptions options) {
+        Map<String, Object> errorAttributes = super.getErrorAttributes(webRequest, options);
+        
+        // Add custom attributes
+        errorAttributes.put("locale", webRequest.getLocale().toString());
+        errorAttributes.put("timestamp", LocalDateTime.now());
+        errorAttributes.put("support", "contact support@playstationapi.com");
+        
+        return errorAttributes;
+    }
+}
+```
+
+---
+
+## 9. Startup Sequence: `main()` to Embedded Tomcat Serving Requests
+
+### Complete Flow:
+
+```java
+public static void main(String[] args) {
+    SpringApplication.run(Application.class, args);
+}
+
+// Detailed breakdown:
+public ConfigurableApplicationContext run(String... args) {
+    
+    // PHASE 1: INITIALIZATION (Pre-Environment)
+    // ------------------------------------------
+    StopWatch stopWatch = new StopWatch();
+    stopWatch.start();
+    
+    // 1.1: Create Bootstrap Context
+    DefaultBootstrapContext bootstrapContext = createBootstrapContext();
+    
+    // 1.2: Get SpringApplicationRunListeners (for events)
+    SpringApplicationRunListeners listeners = getRunListeners(args);
+    
+    // 1.3: Fire ApplicationStartingEvent
+    listeners.starting(bootstrapContext, this.mainApplicationClass);
+    
+    try {
+        // PHASE 2: ENVIRONMENT PREPARATION
+        // ---------------------------------
+        
+        // 2.1: Parse command line arguments
+        ApplicationArguments applicationArguments = 
+            new DefaultApplicationArguments(args);
+        
+        // 2.2: Prepare Environment
+        ConfigurableEnvironment environment = prepareEnvironment(listeners, 
+                                                                bootstrapContext, 
+                                                                applicationArguments);
+        /*
+         * prepareEnvironment() does:
+         * - Create environment (StandardServletEnvironment)
+         * - Configure property sources (system props, env vars, etc.)
+         * - Fire ApplicationEnvironmentPreparedEvent
+         * - Bind environment to SpringApplication
+         * - ConfigurationPropertySources attached
+         */
+        
+        // 2.3: Configure ignore bean info
+        configureIgnoreBeanInfo(environment);
+        
+        // 2.4: Print banner
+        Banner printedBanner = printBanner(environment);
+        
+        
+        // PHASE 3: CONTEXT CREATION
+        // --------------------------
+        
+        // 3.1: Create ApplicationContext
+        context = createApplicationContext();
+        /*
+         * Creates:
+         * - ServletWebServerApplication
+         ```java
+        // 3.1: Create ApplicationContext (continued)
+        context = createApplicationContext();
+        /*
+         * Creates:
+         * - ServletWebServerApplicationContext (for web apps)
+         * - AnnotationConfigApplicationContext (for non-web)
+         * - ReactiveWebServerApplicationContext (for reactive)
+         */
+        
+        context.setApplicationStartup(this.applicationStartup);
+        
+        
+        // PHASE 4: CONTEXT PREPARATION
+        // -----------------------------
+        
+        // 4.1: Prepare context
+        prepareContext(bootstrapContext, context, environment, 
+                      listeners, applicationArguments, printedBanner);
+        /*
+         * prepareContext() does:
+         * - Set environment on context
+         * - Post-process context (apply initializers)
+         * - Fire ApplicationContextInitializedEvent
+         * - Log startup info
+         * - Register singleton beans (args, banner)
+         * - Load sources (main class, component scan)
+         * - Fire ApplicationPreparedEvent
+         */
+        
+        
+        // PHASE 5: CONTEXT REFRESH (MAIN BEAN CREATION)
+        // -----------------------------------------------
+        
+        // 5.1: Refresh context - CRITICAL STEP
+        refreshContext(context);
+        /*
+         * This triggers AbstractApplicationContext.refresh():
+         */
+        
+        // INSIDE refresh():
+        
+        // 5.2: Prepare bean factory
+        prepareRefresh();
+        /*
+         * - Set startupDate
+         * - Init property sources
+         * - Validate required properties
+         */
+        
+        // 5.3: Obtain bean factory
+        ConfigurableListableBeanFactory beanFactory = obtainFreshBeanFactory();
+        /*
+         * - Refresh bean factory
+         * - Get bean factory reference
+         */
+        
+        // 5.4: Prepare bean factory
+        prepareBeanFactory(beanFactory);
+        /*
+         * - Set class loader
+         * - Add BeanPostProcessors (ApplicationContextAwareProcessor, etc.)
+         * - Register resolvable dependencies
+         * - Register environment beans
+         */
+        
+        // 5.5: Post-process bean factory (subclass hook)
+        postProcessBeanFactory(beanFactory);
+        /*
+         * ServletWebServerApplicationContext adds:
+         * - WebApplicationContextServletContextAwareProcessor
+         */
+        
+        // 5.6: Invoke BeanFactoryPostProcessors
+        invokeBeanFactoryPostProcessors(beanFactory);
+        /*
+         * CRITICAL: Processes @Configuration classes
+         * - ConfigurationClassPostProcessor scans for:
+         *   - @ComponentScan
+         *   - @Import
+         *   - @Bean methods
+         *   - @PropertySource
+         * - Registers all bean definitions
+         * - PropertySourcesPlaceholderConfigurer processes ${...}
+         */
+        
+        // 5.7: Register BeanPostProcessors
+        registerBeanPostProcessors(beanFactory);
+        /*
+         * Registers processors like:
+         * - AutowiredAnnotationBeanPostProcessor (@Autowired)
+         * - CommonAnnotationBeanPostProcessor (@Resource, @PostConstruct)
+         * - ApplicationListenerDetector
+         * - AbstractAutoProxyCreator (AOP proxies)
+         */
+        
+        // 5.8: Initialize MessageSource
+        initMessageSource();
+        
+        // 5.9: Initialize ApplicationEventMulticaster
+        initApplicationEventMulticaster();
+        
+        
+        // PHASE 6: EMBEDDED TOMCAT CREATION
+        // -----------------------------------
+        
+        // 5.10: onRefresh() - SUBCLASS HOOK
+        onRefresh();
+        /*
+         * ServletWebServerApplicationContext.onRefresh():
+         */
+        
+        protected void onRefresh() {
+            super.onRefresh();
+            try {
+                createWebServer(); // <--- TOMCAT STARTS HERE
+            } catch (Throwable ex) {
+                throw new ApplicationContextException(
+                    "Unable to start web server", ex);
+            }
+        }
+        
+        private void createWebServer() {
+            WebServer webServer = this.webServer;
+            ServletContext servletContext = getServletContext();
+            
+            if (webServer == null && servletContext == null) {
+                
+                // 6.1: Get ServletWebServerFactory bean
+                StartupStep createWebServer = this.getApplicationStartup()
+                    .start("spring.boot.webserver.create");
+                
+                ServletWebServerFactory factory = getWebServerFactory();
+                // Returns TomcatServletWebServerFactory
+                
+                createWebServer.tag("factory", factory.getClass().toString());
+                
+                // 6.2: Create web server with self-initializer
+                this.webServer = factory.getWebServer(getSelfInitializer());
+                /*
+                 * TomcatServletWebServerFactory.getWebServer():
+                 * 
+                 * - Creates Tomcat instance
+                 * - Configures connector (port 8080)
+                 * - Prepares context (/contextPath)
+                 * - Registers ServletContextInitializers:
+                 *   - DispatcherServletRegistration
+                 *   - FilterRegistrations
+                 *   - ListenerRegistrations
+                 * - Starts Tomcat engine
+                 * - Returns TomcatWebServer wrapper
+                 */
+                
+                createWebServer.end();
+                
+                // 6.3: Register web server graceful shutdown
+                getBeanFactory().registerSingleton(
+                    "webServerGracefulShutdown",
+                    new WebServerGracefulShutdownLifecycle(this.webServer));
+                
+                // 6.4: Register web server startup
+                getBeanFactory().registerSingleton(
+                    "webServerStartStop",
+                    new WebServerStartStopLifecycle(this, this.webServer));
+            }
+            else if (servletContext != null) {
+                // WAR deployment - external container
+                try {
+                    getSelfInitializer().onStartup(servletContext);
+                }
+                catch (ServletException ex) {
+                    throw new ApplicationContextException(
+                        "Cannot initialize servlet context", ex);
+                }
+            }
+            
+            initPropertySources();
+        }
+        
+        // DETAILED TOMCAT STARTUP:
+        
+        // TomcatServletWebServerFactory.getWebServer():
+        public WebServer getWebServer(ServletContextInitializer... initializers) {
+            
+            // Create Tomcat
+            Tomcat tomcat = new Tomcat();
+            
+            // Set base directory
+            File baseDir = (this.baseDirectory != null) ? 
+                this.baseDirectory : createTempDir("tomcat");
+            tomcat.setBaseDir(baseDir.getAbsolutePath());
+            
+            // Create and configure connector
+            Connector connector = new Connector(this.protocol);
+            connector.setThrowOnFailure(true);
+            tomcat.getService().addConnector(connector);
+            customizeConnector(connector); // Set port, etc.
+            tomcat.setConnector(connector);
+            
+            // Disable auto-deployment
+            tomcat.getHost().setAutoDeploy(false);
+            
+            // Configure engine
+            configureEngine(tomcat.getEngine());
+            
+            // Add additional connectors (e.g., HTTPS)
+            for (Connector additionalConnector : this.additionalTomcatConnectors) {
+                tomcat.getService().addConnector(additionalConnector);
+            }
+            
+            // Prepare context
+            prepareContext(tomcat.getHost(), initializers);
+            
+            // Return wrapped Tomcat
+            return getTomcatWebServer(tomcat);
+        }
+        
+        protected void prepareContext(Host host, 
+                                     ServletContextInitializer[] initializers) {
+            
+            // Create Tomcat context
+            TomcatEmbeddedContext context = new TomcatEmbeddedContext();
+            context.setName(getContextPath());
+            context.setDisplayName(getDisplayName());
+            context.setPath(getContextPath());
+            
+            // Configure context
+            File docBase = getValidDocumentRoot();
+            context.setDocBase(docBase != null ? docBase.getAbsolutePath() : "");
+            context.addLifecycleListener(new Tomcat.FixContextListener());
+            context.setParentClassLoader(getClass().getClassLoader());
+            
+            // Configure session
+            resetDefaultLocaleMapping(context);
+            addLocaleMappings(context);
+            context.setUseRelativeRedirects(false);
+            configureTldSkipPatterns(context);
+            
+            // Merge initializers
+            ServletContextInitializer[] initializersToUse = 
+                mergeInitializers(initializers);
+            
+            // Add starter initializer
+            context.addServletContainerInitializer(
+                new TomcatStarter(initializersToUse), NO_CLASSES);
+            
+            // Apply customizers
+            for (ContextCustomizer customizer : this.contextCustomizers) {
+                customizer.customize(context);
+            }
+            
+            // Add context to host
+            host.addChild(context);
+        }
+        
+        // TomcatWebServer constructor:
+        public TomcatWebServer(Tomcat tomcat, boolean autoStart, Shutdown shutdown) {
+            this.tomcat = tomcat;
+            this.autoStart = autoStart;
+            this.gracefulShutdown = (shutdown == Shutdown.GRACEFUL) ? 
+                new GracefulShutdown(tomcat) : null;
+            
+            initialize(); // <--- TOMCAT ACTUALLY STARTS HERE
+        }
+        
+        private void initialize() throws WebServerException {
+            logger.info("Tomcat initialized with port(s): " + 
+                       getPortsDescription(false));
+            
+            synchronized (this.monitor) {
+                try {
+                    // Start Tomcat
+                    this.tomcat.start();
+                    
+                    // Await connector start
+                    Connector connector = this.tomcat.getConnector();
+                    if (connector != null && this.autoStart) {
+                        startConnector(connector);
+                    }
+                    
+                    // Add shutdown hook
+                    Context context = findContext();
+                    ContextBindings.bindClassLoader(context, 
+                        context.getNamingToken(), getClass().getClassLoader());
+                    
+                    // Start async
+                    startDaemonAwaitThread();
+                }
+                catch (Exception ex) {
+                    stopSilently();
+                    throw new WebServerException("Unable to start Tomcat", ex);
+                }
+            }
+        }
+        
+        
+        // PHASE 7: SERVLET REGISTRATION
+        // -------------------------------
+        
+        // When Tomcat starts, TomcatStarter.onStartup() is called:
+        class TomcatStarter implements ServletContainerInitializer {
+            
+            private final ServletContextInitializer[] initializers;
+            
+            @Override
+            public void onStartup(Set<Class<?>> classes, ServletContext servletContext) {
+                
+                // Execute all initializers
+                for (ServletContextInitializer initializer : this.initializers) {
+                    initializer.onStartup(servletContext);
+                }
+                
+                /*
+                 * Key initializers:
+                 * 
+                 * 1. DispatcherServletRegistrationBean:
+                 *    - Registers DispatcherServlet
+                 *    - Maps to "/"
+                 *    - setLoadOnStartup(1)
+                 * 
+                 * 2. FilterRegistrationBeans:
+                 *    - CharacterEncodingFilter
+                 *    - HiddenHttpMethodFilter
+                 *    - FormContentFilter
+                 *    - Custom filters
+                 * 
+                 * 3. ServletListenerRegistrationBeans:
+                 *    - RequestContextListener
+                 *    - Custom listeners
+                 */
+            }
+        }
+        
+        // DispatcherServlet registration:
+        public class DispatcherServletRegistrationBean 
+                extends ServletRegistrationBean<DispatcherServlet> {
+            
+            @Override
+            protected ServletRegistration.Dynamic addRegistration(
+                    String description, ServletContext servletContext) {
+                
+                String name = getServletName();
+                
+                // Register DispatcherServlet
+                return servletContext.addServlet(name, getServlet());
+                /*
+                 * This calls:
+                 * servletContext.addServlet("dispatcherServlet", dispatcherServlet)
+                 * 
+                 * DispatcherServlet is now registered and will handle all requests
+                 */
+            }
+            
+            @Override
+            public void onStartup(ServletContext servletContext) {
+                super.onStartup(servletContext);
+                
+                // Configure servlet
+                ServletRegistration.Dynamic registration = 
+                    addRegistration(getDescription(), servletContext);
+                
+                if (registration == null) {
+                    logger.info("Servlet " + getServletName() + 
+                               " was not registered");
+                    return;
+                }
+                
+                // Set load-on-startup
+                registration.setLoadOnStartup(getLoadOnStartup());
+                
+                // Add mappings
+                registration.addMapping(getUrlMappings().toArray(new String[0]));
+                
+                // Set init parameters
+                registration.setInitParameters(getInitParameters());
+            }
+        }
+        
+        
+        // PHASE 8: COMPLETE BEAN INITIALIZATION
+        // ---------------------------------------
+        
+        // Back to refresh() method:
+        
+        // 5.11: Register ApplicationListeners as beans
+        registerListeners();
+        /*
+         * - Registers event listeners found in context
+         * - ApplicationListenerDetector detects beans implementing ApplicationListener
+         */
+        
+        // 5.12: Finish bean factory initialization
+        finishBeanFactoryInitialization(beanFactory);
+        /*
+         * CRITICAL: Instantiate all remaining non-lazy singletons
+         * 
+         * For each bean definition:
+         * - getBean(beanName)
+         *   - createBean()
+         *     - instantiateBean() // Constructor
+         *     - populateBean() // @Autowired injection
+         *     - initializeBean()
+         *       - applyBeanPostProcessorsBeforeInitialization()
+         *       - invokeInitMethods() // @PostConstruct
+         *       - applyBeanPostProcessorsAfterInitialization() // Create proxies
+         * 
+         * All @Service, @Repository, @Controller beans created here
+         * AOP proxies created here (if @Transactional, @Async, etc.)
+         */
+        
+        // 5.13: Finish refresh
+        finishRefresh();
+        /*
+         * - Clear resource caches
+         * - Initialize lifecycle processor
+         * - Propagate refresh to lifecycle beans
+         * - Publish ContextRefreshedEvent
+         * - Register with LiveBeansView MBean
+         */
+        
+        
+        // PHASE 9: POST-REFRESH
+        // ----------------------
+        
+        // 9.1: After refresh callback
+        afterRefresh(context, applicationArguments);
+        
+        // 9.2: Stop startup timer
+        stopWatch.stop();
+        
+        // 9.3: Log startup time
+        if (this.logStartupInfo) {
+            new StartupInfoLogger(this.mainApplicationClass)
+                .logStarted(getApplicationLog(), stopWatch);
+            /*
+             * Logs: "Started Application in 2.345 seconds (JVM running for 2.789)"
+             */
+        }
+        
+        // 9.4: Fire ApplicationStartedEvent
+        listeners.started(context);
+        /*
+         * Published AFTER context refresh
+         * Beans fully initialized, but runners not yet executed
+         */
+        
+        
+        // PHASE 10: RUNNERS EXECUTION
+        // ----------------------------
+        
+        // 9.5: Call runners
+        callRunners(context, applicationArguments);
+        /*
+         * Executes:
+         * 1. ApplicationRunner beans (ordered)
+         * 2. CommandLineRunner beans (ordered)
+         * 
+         * Used for startup tasks like:
+         * - Database initialization
+         * - Cache warming
+         * - Scheduled task setup
+         */
+    }
+    catch (Throwable ex) {
+        handleRunFailure(context, ex, listeners);
+        throw new IllegalStateException(ex);
+    }
+    
+    
+    // PHASE 11: APPLICATION READY
+    // ----------------------------
+    
+    try {
+        // 11.1: Fire ApplicationReadyEvent
+        listeners.ready(context);
+        /*
+         * Published AFTER runners
+         * Application is fully ready to serve requests
+         * 
+         * AT THIS POINT:
+         * - Tomcat listening on port 8080
+         * - DispatcherServlet registered
+         * - All beans created and initialized
+         * - AOP proxies in place
+         * - Transactions ready
+         * - Application can handle HTTP requests
+         */
+    }
+    catch (Throwable ex) {
+        handleRunFailure(context, ex, null);
+        throw new IllegalStateException(ex);
+    }
+    
+    return context;
+}
+```
+
+### Visual Timeline:
+
+```
+Time: 0ms
+├─ main() called
+├─ SpringApplication.run() starts
+│
+Time: 50ms - INITIALIZATION
+├─ ApplicationStartingEvent fired
+├─ Command line args parsed
+├─ Environment created
+│  ├─ System properties loaded
+│  ├─ Environment variables loaded
+│  ├─ application.properties loaded
+│  └─ ApplicationEnvironmentPreparedEvent fired
+│
+Time: 200ms - CONTEXT CREATION
+├─ ServletWebServerApplicationContext created
+├─ ApplicationContextInitializedEvent fired
+├─ Bean definitions loaded from @ComponentScan
+├─ ApplicationPreparedEvent fired
+│
+Time: 500ms - CONTEXT REFRESH BEGINS
+├─ BeanFactoryPostProcessors executed
+│  └─ All @Configuration classes processed
+├─ BeanPostProcessors registered
+│
+Time: 800ms - TOMCAT CREATED
+├─ onRefresh() called
+├─ TomcatServletWebServerFactory.getWebServer()
+├─ Tomcat instance created
+├─ Connector configured (port 8080)
+├─ Context prepared
+├─ Tomcat.start() called
+│  ├─ Server socket binds to port 8080
+│  ├─ Acceptor thread starts
+│  └─ Worker thread pool initialized
+│
+Time: 900ms - SERVLET REGISTRATION
+├─ TomcatStarter.onStartup() called
+├─ DispatcherServlet registered to "/"
+├─ Filters registered
+│  ├─ CharacterEncodingFilter
+│  ├─ HiddenHttpMethodFilter
+│  └─ Custom filters
+├─ Listeners registered
+│
+Time: 1200ms - BEAN CREATION
+├─ All singleton beans instantiated
+│  ├─ @Service beans created
+│  ├─ @Repository beans created
+│  ├─ @Controller beans created
+│  ├─ Dependencies injected (@Autowired)
+│  ├─ @PostConstruct methods called
+│  └─ AOP proxies created
+│
+Time: 1800ms - FINALIZATION
+├─ ContextRefreshedEvent fired
+├─ ApplicationStartedEvent fired
+├─ ApplicationRunner beans executed
+├─ CommandLineRunner beans executed
+├─ ApplicationReadyEvent fired
+│
+Time: 2000ms - READY
+└─ Tomcat serving requests on http://localhost:8080
+   └─ DispatcherServlet handling all HTTP traffic
+```
+
+---
+
+## 10. Purpose of `SpringApplicationRunListeners`
+
+### Role:
+
+`SpringApplicationRunListeners` is a **multi-event broadcaster** that publishes events at different stages of application startup.
+
+### Implementation:
+
+```java
+// Interface
+public interface SpringApplicationRunListener {
+    
+    // Event sequence:
+    
+    default void starting(ConfigurableBootstrapContext bootstrapContext) {
+        // Called immediately, before any processing
+    }
+    
+    default void environmentPrepared(ConfigurableBootstrapContext bootstrapContext,
+                                    ConfigurableEnvironment environment) {
+        // Called when environment is ready but context not created
+    }
+    
+    default void contextPrepared(ConfigurableApplicationContext context) {
+        // Called after context created but before loading
+    }
+    
+    default void contextLoaded(ConfigurableApplicationContext context) {
+        // Called after context loaded but before refresh
+    }
+    
+    default void started(ConfigurableApplicationContext context) {
+        // Called after refresh but before runners
+    }
+    
+    default void ready(ConfigurableApplicationContext context) {
+        // Called after runners - application ready
+    }
+    
+    default void failed(ConfigurableApplicationContext context, Throwable exception) {
+        // Called on any failure
+    }
+}
+
+// Default implementation
+public class EventPublishingRunListener implements SpringApplicationRunListener {
+    
+    private final SpringApplication application;
+    private final String[] args;
+    private final SimpleApplicationEventMulticaster initialMulticaster;
+    
+    @Override
+    public void starting(ConfigurableBootstrapContext bootstrapContext) {
+        // Publish ApplicationStartingEvent
+        this.initialMulticaster.multicastEvent(
+            new ApplicationStartingEvent(bootstrapContext, 
+                                        this.application, 
+                                        this.args));
+    }
+    
+    @Override
+    public void environmentPrepared(ConfigurableBootstrapContext bootstrapContext,
+                                   ConfigurableEnvironment environment) {
+        // Publish ApplicationEnvironmentPreparedEvent
+        this.initialMulticaster.multicastEvent(
+            new ApplicationEnvironmentPreparedEvent(bootstrapContext,
+                                                   this.application,
+                                                   this.args,
+                                                   environment));
+    }
+    
+    // ... other methods similar
+}
+```
+
+### Custom RunListener Example:
+
+```java
+// Custom listener for PlayStation boot sequence
+public class PlayStationBootListener implements SpringApplicationRunListener {
+    
+    private final SpringApplication application;
+    private final String[] args;
+    
+    public PlayStationBootListener(SpringApplication application, String[] args) {
+        this.application = application;
+        this.args = args;
+    }
+    
+    @Override
+    public void starting(ConfigurableBootstrapContext bootstrapContext) {
+        System.out.println("🎮 PlayStation OS booting...");
+        System.out.println("⚡ Initializing hardware...");
+    }
+    
+    @Override
+    public void environmentPrepared(ConfigurableBootstrapContext bootstrapContext,
+                                   ConfigurableEnvironment environment) {
+        System.out.println("🔧 System configuration loaded");
+        System.out.println("📁 User profile: " + 
+                          environment.getProperty("gamer.username", "Guest"));
+    }
+    
+    @Override
+    public void contextPrepared(ConfigurableApplicationContext context) {
+        System.out.println("🎯 Game services initializing...");
+    }
+    
+    @Override
+    public void contextLoaded(ConfigurableApplicationContext context) {
+        System.out.println("📦 Game library loaded");
+        System.out.println("🌐 PSN connection established");
+    }
+    
+    @Override
+    public void started(ConfigurableApplicationContext context) {
+        System.out.println("✅ All systems operational");
+    }
+    
+    @Override
+    public void ready(ConfigurableApplicationContext context) {
+        System.out.println("🎮 PlayStation ready!");
+        System.out.println("👾 Welcome back, Gamer!");
+        System.out.println("═══════════════════════════");
+    }
+    
+    @Override
+    public void failed(ConfigurableApplicationContext context, Throwable exception) {
+        System.err.println("❌ Boot failed: " + exception.getMessage());
+        System.err.println("🔄 Please restart your console");
+    }
+}
+
+// Register in META-INF/spring.factories:
+/*
+org.springframework.boot.SpringApplicationRunListener=\
+  com.playstation.PlayStationBootListener
+*/
+```
+
+### Output:
+
+```
+🎮 PlayStation OS booting...
+⚡ Initializing hardware...
+🔧 System configuration loaded
+📁 User profile: ProGamer123
+🎯 Game services initializing...
+📦 Game library loaded
+🌐 PSN connection established
+✅ All systems operational
+
+  .   ____          _            __ _ _
+ /\\ / ___'_ __ _ _(_)_ __  __ _ \ \ \ \
+( ( )\___ | '_ | '_| | '_ \/ _` | \ \ \ \
+ \\/  ___)| |_)| | | | | || (_| |  ) ) ) )
+  '  |____| .__|_| |_|_| |_\__, | / / / /
+ =========|_|==============|___/=/_/_/_/
+ :: Spring Boot ::                (v3.2.0)
+
+Started Application in 2.345 seconds (JVM running for 2.789)
+🎮 PlayStation ready!
+👾 Welcome back, Gamer!
+═══════════════════════════════
+```
+
+---
+
+## Gamer & PlayStation Example: Complete Flow
+
+```java
+@SpringBootApplication
+@EnableTransactionManagement
+@EnableAsync
+public class PlayStationApplication {
+    
+    public static void main(String[] args) {
+        SpringApplication.run(PlayStationApplication.class, args);
+    }
+}
+
+// Configuration
+@ConfigurationProperties(prefix = "playstation")
+@Component
+@Validated
+public class PlayStationConfig {
+    
+    @NotBlank
+    private String model = "PS5";
+    
+    @Min(1)
+    @Max(4)
+    private int maxPlayers = 4;
+    
+    private Storage storage;
+    
+    public static class Storage {
+        private int capacityGB = 825;
+        private String type = "SSD";
+        // getters/setters
+    }
+    // getters/setters
+}
+
+@ConfigurationProperties(prefix = "gamer")
+@Component
+public class GamerConfig {
+    private String username;
+    private int level;
+    private List<String> favoriteGames;
+    // getters/setters
+}
+
+// Domain
+@Entity
+public class Game {
+    @Id
+    @GeneratedValue
+    private Long id;
+    private String name;
+    private String genre;
+    private LocalDateTime lastPlayed;
+    // getters/setters
+}
+
+// Repository
+public interface GameRepository extends JpaRepository<Game, Long> {
+    List<Game> findByGenre(String genre);
+}
+
+// Service with Transaction & AOP
+@Service
+public class GameService {
+    
+    @Autowired
+    private GameRepository gameRepository;
+    
+    @Autowired
+    private ApplicationEventPublisher eventPublisher;
+    
+    @Transactional
+    @Timed
+    public void launchGame(String gameName, String playerName) {
+        // Transaction starts here (via TransactionInterceptor)
+        
+        Game game = gameRepository.findByName(gameName)
+            .orElseThrow(() -> new GameNotFoundException(gameName));
+        
+        game.setLastPlayed(LocalDateTime.now());
+        gameRepository.save(game);
+        
+        // Publish event
+        eventPublisher.publishEvent(
+            new GameLaunchedEvent(this, gameName, playerName));
+        
+        // Transaction commits here (if no exception)
+    }
+    
+    @Async
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public CompletableFuture<Void> syncAchievements(Long gameId) {
+        // Runs in separate thread
+        // New transaction (independent of parent)
+        // ...
+        return CompletableFuture.completedFuture(null);
+    }
+}
+
+// Event Listener
+@Component
+public class GameEventListener {
+    
+    @EventListener
+    @Order(1)
+    public void onGameLaunched(GameLaunchedEvent event) {
+        System.out.println("📊 Updating statistics...");
+    }
+    
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    @Order(2)
+    public void sendNotification(GameLaunchedEvent event) {
+        System.out.println("📢 " + event.getPlayerName() + 
+                          " is now playing " + event.getGameName());
+    }
+}
+
+// Controller
+@RestController
+@RequestMapping("/api/games")
+public class GameController {
+    
+    @Autowired
+    private GameService gameService;
+    
+    @PostMapping("/{name}/launch")
+    public ResponseEntity<String> launchGame(
+            @PathVariable String name,
+            @RequestParam String player) {
+        
+        gameService.launchGame(name, player);
+        return ResponseEntity.ok("Game launched!");
+    }
+}
+
+// Exception Handler
+@ControllerAdvice
+public class GameExceptionHandler {
+    
+    @ExceptionHandler(GameNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleNotFound(GameNotFoundException ex) {
+        return ResponseEntity
+            .status(HttpStatus.NOT_FOUND)
+            .body(new ErrorResponse(ex.getMessage()));
+    }
+}
+```
+
+### What Happens When You Start This Application:
+
+```
+1. main() executes
+2. SpringApplication.run() starts
+3. PlayStationBootListener prints boot sequence
+4. Environment loads application.properties:
+   - playstation.model=PS5
+   - gamer.username=ProGamer123
+5. Binder binds properties to PlayStationConfig, GamerConfig
+6. ServletWebServerApplicationContext created
+7. onRefresh() → Tomcat starts on port 8080
+8. DispatcherServlet registered
+9. Bean creation begins:
+   - GameService bean created
+   - GameRepository proxy created (JPA)
+   - GameController bean created
+   - Proxies created:
+     * GameService wrapped in CGLIB proxy (for @Transactional, @Timed)
+     * Transaction interceptor added
+     * AOP advice woven in
+10. ContextRefreshedEvent fired
+11. ApplicationReadyEvent fired
+12. Server ready at http://localhost:8080
+
+REQUEST FLOW:
+POST /api/games/God-of-War/launch?player=ProGamer123
+  → DispatcherServlet receives request
+  → Routes to GameController.launchGame()
+  → Calls GameService.launchGame() proxy
+    → TransactionInterceptor intercepts
+      → Starts transaction
+      → Invokes actual method
+      → gameRepository.save() (within transaction)
+      → Publishes GameLaunchedEvent
+        → GameEventListener.onGameLaunched() (immediate)
+      → Commits transaction
+        → GameEventListener.sendNotification() (after commit)
+    → Returns response
+  → 200 OK returned to client
+```
+
+This complete flow shows how Spring Boot orchestrates configuration loading, proxy creation, AOP weaving, event publishing, transaction management, and embedded server startup into a cohesive application lifecycle!
+```
